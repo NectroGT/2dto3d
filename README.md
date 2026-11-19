@@ -35,11 +35,20 @@ the tool works from the geometry only and `--scale` is required.
    "⌴Ø.38 ↧.205" set the drill size (tap drill for threads), depth, through or counterbore of every hole of that
    kind. Threads found are listed in the report. Notes that point into a detail view ("DETAIL AG  SCALE 1:1") or at an
    edge hole in a side view are traced back to the hole they mean.
-6. **Builds** the solid with CadQuery and exports STEP.
+6. **Section views** (hatched views, e.g. "SECTION G-G"): the hatched area is the true cross-section along the
+   cutting line on the plan. Wherever the model has material the section shows as empty, it is cut away - swept
+   around the centre of the plan's arcs when the empty area sits at their radii (ring seats, lips, grooves round a
+   bore), otherwise cut straight across, as wide as the nearest pair of plan lines either side of the cut.
+7. **Turned (round) parts**: an end view of concentric circles as wide as the plan makes the outline spin into a
+   round part; inner circles that are not outline steps are axial bores. A part with its own "SCALE: 1 / 1" label
+   uses that scale.
+8. **Builds** the solid with CadQuery and exports STEP.
 
 ## Limits
 - Threads are built at the drawn hole size; slanted features are not built.
 - Stepped parts: only raised areas whose edges show in a side view; pockets inside raised areas are not handled.
+- Sections: vertical cutting lines only; the profile found at the cut is used all the way round (pads or features
+  that exist only at some angles are not separated).
 - Parts that need sections to be understood (rings, lips, undercuts) are listed as "unused views".
 - Detail views are located on their parent view (so notes pointing into them work) but their geometry is not yet
   used to shape the part.

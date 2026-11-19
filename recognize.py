@@ -53,6 +53,8 @@ class PartModel:
     side_holes: list = field(default_factory=list)
     base: float = 0.0              # if > 0: plate thickness outside the raised areas
     raised: list = field(default_factory=list)
+    turned: tuple = None           # (axis x in the plan) for a turned (round) part; holes = axial bores
+    outline_poly: object = None
 
 
 # ---------------------------------------------------------------- views -> part groups
@@ -72,11 +74,11 @@ def group_parts(views, pair_tol=0.03):
                 continue
             if abs(v.x0 - plan.x0) < pair_tol and abs(v.x1 - plan.x1) < pair_tol:
                 d = "below" if v.y1 < plan.y0 else "above"
-                if v.h < 0.5 * small:
+                if v.h < 0.8 * plan.h and abs(v.h - plan.h) > pair_tol:
                     side.append((d, v))
                 elif abs(v.h - plan.h) < pair_tol and d == "below" and bottom is None:
                     bottom = v
-            elif abs(v.y0 - plan.y0) < pair_tol and abs(v.y1 - plan.y1) < pair_tol and v.w < 0.5 * small:
+            elif abs(v.y0 - plan.y0) < pair_tol and abs(v.y1 - plan.y1) < pair_tol and v.w < 0.8 * plan.w:
                 side.append(("right" if v.x0 > plan.x1 else "left", v))
         if not side:
             continue
@@ -161,6 +163,7 @@ def to_segments(coords, circles, tol):
                 continue
         segs.append(("line", pts[a], pts[order[k + 1]]))
         k += 1
+    segs = _fit_polyline_arcs(segs, tol)
     # merge collinear lines
     out = []
     for s in segs:
@@ -172,6 +175,35 @@ def to_segments(coords, circles, tol):
             if abs(cr) < 1e-6 * max(1e-9, math.hypot(*v1) * math.hypot(*v2)) * 1e3 and v1[0] * v2[0] + v1[1] * v2[1] > 0:
                 out[-1] = ("line", p0, q1); continue
         out.append(s)
+    return out
+
+
+def _fit_polyline_arcs(segs, tol):
+    """arcs that the PDF drew as many short straight pieces -> one arc"""
+    out, i = [], 0
+    while i < len(segs):
+        if segs[i][0] != "line" or math.dist(segs[i][1], segs[i][2]) > 0.12:
+            out.append(segs[i]); i += 1; continue
+        j, best = i, None
+        while j + 1 < len(segs) and segs[j + 1][0] == "line" and math.dist(segs[j + 1][1], segs[j + 1][2]) <= 0.12:
+            j += 1
+            if j - i >= 4:
+                pts = [segs[i][1]] + [segs[k][2] for k in range(i, j + 1)]
+                cx, cy, r, rms = fit_circle(pts)
+                dev = max(abs(math.dist(q, (cx, cy)) - r) for q in pts)
+                # every turn the same way (no straight run or corner folded in)
+                cr = [((b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0])) for a, b, c in zip(pts, pts[1:], pts[2:])]
+                same = all(x > 1e-9 for x in cr) or all(x < -1e-9 for x in cr)
+                if dev < 1.5e-4 and same and r < 50:
+                    best = j
+                else:
+                    break
+        if best is not None:
+            pts = [segs[i][1]] + [segs[k][2] for k in range(i, best + 1)]
+            out.append(("arc", pts[0], pts[len(pts) // 2], pts[-1]))
+            i = best + 1
+        else:
+            out.append(segs[i]); i += 1
     return out
 
 
@@ -445,6 +477,45 @@ def recognize(plan, side, bottom, scale, snap=0.0005):
                 side_, d = _cut_depth(readers, lambda r: (by0, by1) if not r.horizontal else (bx0, bx1), "bottom", T)
                 cuts.append(Cut(segs, side_, d))
     pm = PartModel(outline, T, holes, cuts, notes)
+    pm.outline_poly = outer
+    # a turned part: its end view is a set of concentric circles as wide as the plan view
+    for rdr in readers:
+        circ = [p for p in rdr.v.prims if p.kind == "circle"]
+        if circ and abs(rdr.v.w - rdr.v.h) < 0.01:
+            big = max(circ, key=lambda p: p.r)
+            if abs(2 * big.r - rdr.v.w) > 0.01:
+                continue
+            width = (plan.x1 - plan.x0) if rdr.horizontal else (plan.y1 - plan.y0)
+            if abs(2 * big.r - width) < 0.01 and all(math.dist((p.cx, p.cy), (big.cx, big.cy)) < 0.003 for p in circ):
+                u = big.cx if rdr.horizontal else big.cy
+                axis = (u - (plan.x0 if rdr.horizontal else plan.y0)) * scale
+                bores = []
+                # radii of the outline's steps (silhouette edges seen end-on are circles too, not bores)
+                c0 = (big.cx if rdr.horizontal else big.cy)
+                steps_r = set()
+                for q in plan.prims:
+                    if q.kind == "line":
+                        for xx, yy in q.pts:
+                            steps_r.add(round(abs((xx if rdr.horizontal else yy) - c0), 3))
+                for p in circ:
+                    if p.r < big.r - 0.01 and round(p.r, 3) not in steps_r and round(p.r, 3) + 0.001 not in steps_r \
+                            and round(p.r, 3) - 0.001 not in steps_r:
+                        # depth: plan lines at axis +/- r running in from the end facing this view
+                        depth = None
+                        for q in plan.thin + plan.prims:
+                            if q.kind != "line":
+                                continue
+                            (ax, ay), (bx, by) = q.pts[0], q.pts[-1]
+                            if rdr.horizontal and abs(ax - bx) < 1e-3 and min(abs(ax - (u - p.r)), abs(ax - (u + p.r))) < 0.003:
+                                end = plan.y1 if rdr.where == "above" else plan.y0
+                                near, far = sorted((abs(ay - end), abs(by - end)))
+                                if near < 0.03:
+                                    depth = max(depth or 0, far)
+                        bores.append((p.r * scale, (depth or p.r * 4) * scale, rdr.where))
+                pm.turned = (axis, "x" if rdr.horizontal else "y", bores)
+                pm.holes, pm.side_holes, pm.cuts = [], [], []
+                notes.append(f"turned part (round) - {len(bores)} axial bore(s)")
+                return pm
     _steps(pm, plan, readers, fs, body, outer, scale, M, circles, ctol)
     _side_holes(pm, plan, readers, outer, scale, M)
     _hidden_edge_holes(pm, plan, outer, scale, M)

@@ -27,13 +27,36 @@ def _wire(segs, arcs=True):
 def _solid(segs, h):
     if len(segs) < 2:
         raise ValueError("empty ring")
-    try:
-        return _wire(segs).extrude(h)
-    except Exception:
-        return _wire(segs, arcs=False).extrude(h)
+    for arcs in (True, False):
+        try:
+            s = _wire(segs, arcs).extrude(h)
+            if s.val().isValid():
+                return s
+        except Exception:
+            pass
+    # last resort: a cleaned polygon through the segment ends
+    import shapely.geometry as sg
+    poly = sg.Polygon([q[1] for q in segs]).buffer(0).simplify(5e-4)
+    if poly.geom_type == "MultiPolygon":
+        poly = max(poly.geoms, key=lambda g: g.area)
+    return cq.Workplane("XY").polyline(list(poly.exterior.coords)[:-1]).close().extrude(h)
+
+
+def _build_turned(pm):
+    from shapely.geometry import box
+    axis, kind, bores = pm.turned
+    poly = pm.outline_poly
+    # outline in model units, keep the half on one side of the axis and spin it
+    from shapely.affinity import affine_transform
+    x0, y0 = poly.bounds[0], poly.bounds[1]
+    xs = (poly.bounds[2] - x0)
+    sc = None
+    return None
 
 
 def build(pm):
+    if pm.turned:
+        return _turned(pm)
     T = pm.thickness
     if pm.base and pm.raised:
         body = _solid(pm.outline, pm.base)
@@ -87,3 +110,28 @@ def export(body, path, to_mm=True):
         s = s.scale(25.4)
     cq.exporters.export(cq.Workplane().add(s), path)
     return s
+
+
+def _turned(pm):
+    """revolve the half outline (model units) about the axis line"""
+    axis, kind, bores = pm.turned
+    pts = []
+    for s in pm.outline:
+        pts.append(s[1])
+    import shapely.geometry as sg
+    poly = sg.Polygon(pts).buffer(0)
+    if kind == "x":                      # axis parallel to model y at x = axis
+        half = poly.intersection(sg.box(axis, -1e3, 1e3, 1e3))
+        prof = [(x - axis, y) for x, y in half.exterior.coords[:-1]]
+        prof = [(max(r, 0.0), y) for r, y in prof]
+        body = cq.Workplane("XY").polyline(prof).close().revolve(360, (0, 0, 0), (0, 1, 0))
+        ymin, ymax = half.bounds[1], half.bounds[3]
+        for r, d, where in bores:
+            y0 = ymax - d if where == "above" else ymin
+            body = body.cut(cq.Workplane("XZ").workplane(offset=-y0).circle(r).extrude(-d))
+    else:
+        half = poly.intersection(sg.box(-1e3, axis, 1e3, 1e3))
+        prof = [(x, y - axis) for x, y in half.exterior.coords[:-1]]
+        prof = [(x, max(r, 0.0)) for x, r in prof]
+        body = cq.Workplane("XY").polyline(prof).close().revolve(360, (0, 0, 0), (1, 0, 0))
+    return body

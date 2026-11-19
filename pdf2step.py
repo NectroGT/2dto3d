@@ -2,7 +2,7 @@
 
 usage: python pdf2step.py drawing.pdf --page 13 --scale 3 [-o outdir] [--units inch|mm]
 Each part on the page needs a plan view and at least one side view next to it (third-angle)."""
-import argparse, json, os, sys
+import argparse, json, math, os, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from extract import page_prims
 from views import find_views, dominant_angle, rotate_prims
@@ -57,6 +57,26 @@ def _apply_notes(pm, notes, thin, details=(), side=(), plan=None, scale=1.0):
         pm.notes.append(f"hole notes applied to {n} hole(s)")
 
 
+def _part_scale(text_lines, plan, sheet_scale):
+    """a part drawn at its own scale carries "SCALE: 1 / 1" in its label near the views; detail and section
+    titles are not part labels"""
+    import re
+    best = None
+    for i, L in enumerate(text_lines):
+        m = re.search(r"SCALE\W*(\d+)\s*[:/ ]\s*(\d+)", L["text"].upper())
+        if not m or not int(m.group(1)) or not int(m.group(2)):
+            continue
+        above = [N["text"].upper() for N in text_lines if 0 < N["y0"] - L["y1"] < 0.3 and abs(N["x0"] - L["x0"]) < 1.0]
+        if any("DETAIL" in t or "SECTION" in t for t in above):
+            continue
+        cx, cy = (L["x0"] + L["x1"]) / 2, L["yc"]
+        dx = max(plan.x0 - cx, 0, cx - plan.x1); dy = max(plan.y0 - cy, 0, cy - plan.y1)
+        d = math.hypot(dx, dy)
+        if d < 2.5 and (best is None or d < best[0]):
+            best = (d, int(m.group(2)) / int(m.group(1)))
+    return best[1] if best else sheet_scale
+
+
 def run(pdf, page, scale, out, units="inch"):
     prims, size = page_prims(pdf, page - 1)
     notes, text_scale, text_lines = [], None, []
@@ -78,6 +98,9 @@ def run(pdf, page, scale, out, units="inch"):
         details = find_details(text_lines, views, scale)
     detail_views = {id(d["view"]) for d in details}
     views_main = [v for v in views if id(v) not in detail_views]
+    from sections import find_sections
+    sections = find_sections(prims, views_main)
+    section_views = {id(s["view"]) for s in sections}
     parts = group_parts(views_main)
     used = {id(v) for pl, sd, bt in parts for v in [pl, bt] + [x for _, x in sd] if v is not None}
     unused = [v for v in views_main if id(v) not in used and not v.iso and v.w * v.h > 0.01]
@@ -102,17 +125,22 @@ def run(pdf, page, scale, out, units="inch"):
     results = []
     for k, ((plan, side, bottom), turned) in enumerate(parts, 1):
         name = f"p{page:02d}_{k:02d}"
+        pscale = _part_scale(text_lines, plan, scale) if not turned else scale
         try:
-            pm = recognize(plan, side, bottom, scale)
+            pm = recognize(plan, side, bottom, pscale)
             if notes and not turned:
-                _apply_notes(pm, notes, [p for p in prims if p.cls == "thin"], details, side, plan, scale)
+                _apply_notes(pm, notes, [p for p in prims if p.cls == "thin"], details, side, plan, pscale)
             body = build(pm)
+            secs = [s for s in sections if s["view"] not in [v for _, v in side]]
+            if secs and not turned:
+                from sections import apply_sections
+                body = apply_sections(body, pm, plan, pscale, prims, secs)
             s = export(body, os.path.join(out, name + ".step"), to_mm=units == "inch")
             bb = s.BoundingBox()
             if abs(turned) > 0:
                 pm.notes.append(f"drawn turned {turned:.2f} deg on the sheet - straightened")
             threads = sorted({h.note for h in pm.holes + pm.side_holes if getattr(h, "note", None)})
-            results.append(dict(name=name, scale=scale, threads=threads, size_mm=[round(bb.xlen, 2), round(bb.ylen, 2), round(bb.zlen, 2)],
+            results.append(dict(name=name, scale=pscale, threads=threads, size_mm=[round(bb.xlen, 2), round(bb.ylen, 2), round(bb.zlen, 2)],
                                 holes=len(pm.holes), side_holes=len(pm.side_holes), cuts=len(pm.cuts), notes=pm.notes,
                                 views=[repr(plan)] + [f"{w}: {v!r}" for w, v in side] + ([f"bottom: {bottom!r}"] if bottom else [])))
         except Exception as e:
