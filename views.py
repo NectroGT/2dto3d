@@ -26,9 +26,13 @@ class View:
         self.thin = []          # thin-line prims inside the view box (hidden + centre + some dims)
         n_slant = sum(1 for p in prims if p.kind == "line" and _slanted(p))
         n_lines = sum(1 for p in prims if p.kind == "line")
-        iso_lines = sum(1 for p in prims if p.kind == "line" and _len(p) > 0.03 and
-                        min(abs(_ang(p) % 180 - a) for a in (30, 150)) < 4)
-        self.iso = n_lines > 10 and iso_lines > 0.25 * sum(1 for p in prims if p.kind == "line" and _len(p) > 0.03)
+        # isometric: long edges in three directions, about 30, 90 and 150 deg (a view merely turned on the
+        # sheet has only two, at right angles)
+        tot = sum(_len(p) for p in prims if p.kind == "line" and _len(p) > 0.03) or 1.0
+        def share(a0):
+            return sum(_len(p) for p in prims if p.kind == "line" and _len(p) > 0.03 and
+                       abs(((_ang(p) - a0) + 90) % 180 - 90) < 2.5) / tot
+        self.iso = n_lines > 10 and share(30) > 0.12 and share(150) > 0.12
         self.role = ""
 
     @property
@@ -142,3 +146,48 @@ def pair_views(views, tol=0.03):
             if abs(a.y0 - b.y0) < tol and abs(a.y1 - b.y1) < tol and (b.x1 < a.x0 or a.x1 < b.x0):
                 pairs.append(("h", a, b))
     return pairs
+
+
+def dominant_angle(view):
+    """angle (deg, -45..45] that the view's long straight edges are turned by; 0 for a normal view"""
+    hist = {}
+    for p in view.prims:
+        if p.kind != "line":
+            continue
+        L = _len(p)
+        if L < 0.05:
+            continue
+        a = _ang(p) % 90
+        if a > 45:
+            a -= 90
+        k = round(a * 2) / 2
+        hist[k] = hist.get(k, 0) + L
+    if not hist:
+        return 0.0
+    k = max(hist, key=hist.get)
+    # refine with a length-weighted mean of the lines in that bin
+    num = den = 0.0
+    for p in view.prims:
+        if p.kind == "line" and _len(p) >= 0.05:
+            a = _ang(p) % 90
+            if a > 45:
+                a -= 90
+            if abs(a - k) <= 0.5:
+                num += a * _len(p); den += _len(p)
+    return num / den if den else k
+
+
+def rotate_prims(prims, deg):
+    """copies of prims turned by deg about the page origin"""
+    import copy
+    c, s = math.cos(math.radians(deg)), math.sin(math.radians(deg))
+    R = lambda q: (q[0] * c - q[1] * s, q[0] * s + q[1] * c)
+    out = []
+    for p in prims:
+        q = copy.copy(p)
+        q.pts = [R(t) for t in p.pts]
+        if p.kind in ("circle", "arc"):
+            q.cx, q.cy = R((p.cx, p.cy))
+            q.a0, q.a1 = p.a0 + deg, p.a1 + deg
+        out.append(q)
+    return out
