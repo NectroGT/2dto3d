@@ -43,11 +43,20 @@ def read_words(pdf, pageno):
     """[(text, x0, y0, x1, y1)] in paper inches, y up. Uses RapidOCR (pip only) when installed, else Tesseract."""
     global _RAPID
     try:
-        from rapidocr_onnxruntime import RapidOCR
+        try:
+            from rapidocr import RapidOCR                # rapidocr >= 2 (Python 3.13+)
+            new_api = True
+        except ImportError:
+            from rapidocr_onnxruntime import RapidOCR    # older package, Python < 3.13
+            new_api = False
         if _RAPID is None:
             _RAPID = RapidOCR()
         im, k, Hpt = text_layer(pdf, pageno, dpi=300)
-        res, _ = _RAPID(np.array(im.convert("RGB")))
+        r = _RAPID(np.array(im.convert("RGB")))
+        if new_api:
+            res = list(zip(r.boxes, r.txts, r.scores)) if r.boxes is not None else []
+        else:
+            res = r[0]
         out = []
         for box, t, conf in res or []:
             if float(conf) < 0.4:
