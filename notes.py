@@ -25,22 +25,50 @@ def leader_tips(note, thin_lines, reach=0.08, join=0.012):
     return tips
 
 
-def attach(notes, thin_lines, hole_groups, side_holes_paper):
-    """hole_groups: [dict(x, y, r=[(radius, side)]) in paper units]; side_holes_paper: [(index, (x, y))].
-    Returns {("hole", i) | ("side", i): info}"""
+def _seg_dist(p, a, b):
+    ax, ay = b[0] - a[0], b[1] - a[1]
+    L = ax * ax + ay * ay
+    t = 0 if L == 0 else max(0, min(1, ((p[0] - a[0]) * ax + (p[1] - a[1]) * ay) / L))
+    return math.dist(p, (a[0] + t * ax, a[1] + t * ay))
+
+
+def attach(notes, thin_lines, hole_groups, side_holes_paper, details=(), side_views=()):
+    """hole_groups: [dict(x, y, r=[(radius, side)]) in paper units, where drawn];
+    side_holes_paper: [(index, (x0, y0), (x1, y1), r)] the hole's axis as drawn on the sheet;
+    details: detail views found on the sheet (a tip inside one is traced back to its parent view);
+    side_views: [(view, horizontal, [(hole index, u, r)])] - a tip on a side / section view picks the hole
+    whose edges it lies between. Returns {("hole", i) | ("side", i): info}"""
+    from details import inside, to_parent
     out = {}
     for n in notes:
         for tip in leader_tips(n, thin_lines):
+            for d in details:
+                if inside(d, tip):
+                    tip = to_parent(d, tip); break
             best = None
             for i, g in enumerate(hole_groups):
                 for r, _ in g["r"]:
-                    d = abs(math.dist(tip, (g["x"], g["y"])) - r)
-                    if math.dist(tip, (g["x"], g["y"])) <= r + 0.03 and (best is None or d < best[0]):
-                        best = (d, ("hole", i))
-            for i, q in side_holes_paper:
-                d = math.dist(tip, q)
-                if d < 0.12 and (best is None or d < best[0]):
-                    best = (d, ("side", i))
+                    dd = abs(math.dist(tip, (g["x"], g["y"])) - r)
+                    if math.dist(tip, (g["x"], g["y"])) <= r + 0.03 and (best is None or dd < best[0]):
+                        best = (dd, ("hole", i))
+            for i, a, b, r, drawn in side_holes_paper:
+                dd = _seg_dist(tip, a, b) - r
+                if drawn is not None:                   # also where it is drawn as a circle in a side view
+                    dd = min(dd, math.dist(tip, drawn) - r)
+                if dd < 0.03 and (best is None or dd < best[0]):
+                    best = (max(dd, 0), ("side", i))
+            if best is None:
+                for v, horizontal, cols in side_views:
+                    if v.x0 - 0.02 <= tip[0] <= v.x1 + 0.02 and v.y0 - 0.02 <= tip[1] <= v.y1 + 0.02:
+                        u = tip[0] if horizontal else tip[1]
+                        for i, uc, r in cols:
+                            if abs(u - uc) <= r + 0.01 and (best is None or abs(u - uc) < best[0]):
+                                best = (abs(u - uc), ("hole", i))
+                        if best is None:          # an edge hole seen from the side: u falls on its axis
+                            for i, a, b, r, _ in side_holes_paper:
+                                lo, hi = sorted((a[0], b[0]) if horizontal else (a[1], b[1]))
+                                if lo - r - 0.02 <= u <= hi + r + 0.02:
+                                    best = (0.0, ("side", i)); break
             if best:
                 out[best[1]] = n["info"]
     return out

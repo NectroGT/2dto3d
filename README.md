@@ -33,13 +33,15 @@ the tool works from the geometry only and `--scale` is required.
 5. **Reads the text** (OCR on the lettering, which CAD exports usually draw as outlines): the title block scale and
    the hole notes. A note is matched to its hole by following its leader line; "6X #10-24 UNC ↧.50", "26X Ø.21 THRU",
    "⌴Ø.38 ↧.205" set the drill size (tap drill for threads), depth, through or counterbore of every hole of that
-   kind. Threads found are listed in the report.
+   kind. Threads found are listed in the report. Notes that point into a detail view ("DETAIL AG  SCALE 1:1") or at an
+   edge hole in a side view are traced back to the hole they mean.
 6. **Builds** the solid with CadQuery and exports STEP.
 
 ## Limits
 - Threads are built at the drawn hole size; slanted features are not built.
 - Stepped parts: only raised areas whose edges show in a side view; pockets inside raised areas are not handled.
 - Parts that need sections to be understood (rings, lips, undercuts) are listed as "unused views".
-- Detail views at other scales are ignored, and so are notes that only point into a detail view.
+- Detail views are located on their parent view (so notes pointing into them work) but their geometry is not yet
+  used to shape the part.
 
 `compare.py auto.step reference.step` reports the volume overlap between an auto model and a reference.
