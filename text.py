@@ -36,8 +36,27 @@ def text_layer(pdf, pageno, dpi=DPI):
     return im, k, page.rect.height
 
 
+_RAPID = None
+
+
 def read_words(pdf, pageno):
-    """[(text, x0, y0, x1, y1)] in paper inches, y up"""
+    """[(text, x0, y0, x1, y1)] in paper inches, y up. Uses RapidOCR (pip only) when installed, else Tesseract."""
+    global _RAPID
+    try:
+        from rapidocr_onnxruntime import RapidOCR
+        if _RAPID is None:
+            _RAPID = RapidOCR()
+        im, k, Hpt = text_layer(pdf, pageno, dpi=300)
+        res, _ = _RAPID(np.array(im.convert("RGB")))
+        out = []
+        for box, t, conf in res or []:
+            if float(conf) < 0.4:
+                continue
+            xs = [p[0] for p in box]; ys = [p[1] for p in box]
+            out.append((t.strip(), min(xs) / k / 72, (Hpt - max(ys) / k) / 72, max(xs) / k / 72, (Hpt - min(ys) / k) / 72))
+        return out
+    except ImportError:
+        pass
     import pytesseract
     im, k, Hpt = text_layer(pdf, pageno)
     data = pytesseract.image_to_data(im, config="--psm 11", output_type=pytesseract.Output.DICT)
@@ -122,7 +141,7 @@ def parse_callout(text):
         out["thru"] = True
     # depth: the number after a V (the depth sign); OCR often drops the sign, so after a thread a lone
     # trailing number is the depth too
-    m = re.search(r"[Vv]\s*" + NUM, t)
+    m = re.search(r"[VvTY\u21a7]\s*" + NUM, t)
     if m:
         out["depth"] = float(m.group(1))
     elif "thread" in out and "THRU" not in up:
@@ -130,8 +149,10 @@ def parse_callout(text):
         if m:
             out["depth"] = float(m.group(1))
     # c'bore: "L_I", "LJ", "|_|" ... followed by a diameter
-    m = re.match(r"\s*(?:L|\||U)[_\s]*[IJ]?\s*[I|]?D?\s*[@O0D]?\s*" + NUM + r"\s*[Vv]\s*" + NUM, up)
-    if m:                                  # a counterbore line: (c'bore sign) dia (depth sign) depth
+    m = re.match(r"\s*(?:(?:L|\||U)[_\s]*[IJ]?\s*[I|]?D?)?\s*[@O0D]?\s*" + NUM + r"\s*[VTY\u21a7]\s*" + NUM + r"\s*$", up)
+    if m is None:   # depth sign lost: "L@.375.19" - needs the c'bore or diameter sign in front
+        m = re.match(r"\s*(?:L|\||U|\u2334)[_\s]*[IJ]?\s*[@O0D]\s*(\d*\.\d+?)(\.\d+)\s*$", up)
+    if m and not re.match(r"\s*\d+\s*X", up):     # a counterbore line: (c'bore sign) dia (depth sign) depth
         return dict(cbore_d=float(m.group(1)), cbore_depth=float(m.group(2)))
     # drill diameter: a decimal after a diameter sign (or the first bare decimal)
     m = re.search(r"[@OD]\s*" + NUM, up.split("L_I")[0].split("LJ")[0])

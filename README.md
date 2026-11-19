@@ -8,11 +8,9 @@ python pdf2step.py drawing.pdf --page 13 -o out/                # scale read fro
 python pdf2step.py drawing.pdf --page 13 --scale 3 -o out/      # or give it (3 = drawing scale 1:3)
 ```
 
-Reading the sheet's text needs **Tesseract OCR** installed (Windows: the installer from
-https://github.com/UB-Mannheim/tesseract/wiki, then make sure `tesseract` runs in a terminal; macOS: `brew install
-tesseract`; Linux: `apt install tesseract-ocr`). Without it the tool still works from the geometry, but `--scale`
-is required and hole notes are not used.
-One STEP file per part found on the page (in mm), plus `pNN_report.json` with what was found and anything to check.
+`pip install -r requirements.txt` installs everything, including the OCR used to read the sheet's text
+(RapidOCR, which runs locally). If RapidOCR is not installed, Tesseract is used when it is on the PATH; with neither,
+the tool works from the geometry only and `--scale` is required.
 
 ## How it works
 1. **Reads the lines, not a picture.** The PDF keeps the drawing as true lines, arcs and circles. Thick
