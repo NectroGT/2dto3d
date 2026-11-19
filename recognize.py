@@ -22,12 +22,31 @@ class Cut:
 
 
 @dataclass
+class SideHole:
+    entry: tuple           # (x, y) where the hole enters, on the outline
+    direction: tuple       # unit (dx, dy) into the part
+    z: float
+    r: float
+    depth: float
+
+
+@dataclass
+class Raised:
+    ring: list             # outline of the raised area
+    inner: list            # rings of holes in it (list of seg lists)
+    z_top: float
+
+
+@dataclass
 class PartModel:
     outline: list
     thickness: float
     holes: list = field(default_factory=list)
     cuts: list = field(default_factory=list)
     notes: list = field(default_factory=list)
+    side_holes: list = field(default_factory=list)
+    base: float = 0.0              # if > 0: plate thickness outside the raised areas
+    raised: list = field(default_factory=list)
 
 
 # ---------------------------------------------------------------- views -> part groups
@@ -164,7 +183,7 @@ class SideReader:
             top_at_high = where == "left"
         self.top_at_high = top_at_high
         self.T = (self.t1 - self.t0) * scale
-        self.lines, self.flats = [], []
+        self.lines, self.flats, self.vflats = [], [], []
         for p in view.prims + view.thin:
             if p.kind != "line":
                 continue
@@ -175,18 +194,22 @@ class SideReader:
                 self.lines.append((y0, min(x0, x1), max(x0, x1)))
             if self.horizontal and abs(y1 - y0) < 1e-3:
                 self.flats.append((y0, min(x0, x1), max(x0, x1)))
+                if p.cls == "visible":
+                    self.vflats.append((y0, min(x0, x1), max(x0, x1)))
             if not self.horizontal and abs(x1 - x0) < 1e-3:
                 self.flats.append((x0, min(y0, y1), max(y0, y1)))
+                if p.cls == "visible":
+                    self.vflats.append((x0, min(y0, y1), max(y0, y1)))
         self.lines = self._merge(self.lines)
 
     @staticmethod
-    def _merge(lines, tol=1e-3):
+    def _merge(lines, tol=1e-3, gap=0.07):
         """join dashes on the same coordinate into spans"""
-        lines.sort()
+        lines.sort(key=lambda s: (round(s[0] / tol), s[1]))
         out = []
         for u, a, b in lines:
-            if out and abs(out[-1][0] - u) < tol and a <= out[-1][2] + 0.07:
-                out[-1] = (out[-1][0], out[-1][1], max(out[-1][2], b))
+            if out and abs(out[-1][0] - u) < tol and a <= out[-1][2] + gap:
+                out[-1] = (out[-1][0], min(out[-1][1], a), max(out[-1][2], b))
             else:
                 out.append((u, a, b))
         return out
@@ -281,6 +304,24 @@ def recognize(plan, side, bottom, scale, snap=0.0005):
     for p in plan.prims:
         if p.kind == "circle" and Point(p.cx, p.cy).within(body.buffer(1e-3)) and p.r < 0.45 * min(plan.w, plan.h):
             add_circle(p.cx, p.cy, p.r, "top")
+    # hidden circles (dashed arcs in the plan) are features on the far face: counterbores / holes from below
+    arcs = {}
+    for p in plan.thin:
+        if p.kind in ("arc", "circle") and p.r < 0.45 * min(plan.w, plan.h) and Point(p.cx, p.cy).within(body.buffer(1e-3)):
+            k = (round(p.cx / 0.002), round(p.cy / 0.002), round(p.r / 0.001))
+            arcs.setdefault(k, []).append(p)
+    for k, ps_ in arcs.items():
+        sweep = 0.0
+        for p in ps_:
+            if p.kind == "circle":
+                sweep = 360.0; break
+            sweep += abs(((p.a1 - p.a0) + 180) % 360 - 180)
+        # dashed circles come as several short arcs; a centre-mark or thread arc is a single 270 deg arc
+        if sweep >= 200 and (len(ps_) >= 3 or ps_[0].kind == "circle"):
+            p = ps_[0]
+            hit = next((g for g in groups if math.dist((g["x"], g["y"]), (p.cx, p.cy)) < 0.003), None)
+            if hit is not None or True:
+                add_circle(p.cx, p.cy, p.r, "bottom")
     # circles drawn as arcs or polylines show up as round inner rings of the material face
     for ring in body.interiors:
         c = circle_of_ring(ring, 0.0015)
@@ -332,6 +373,31 @@ def recognize(plan, side, bottom, scale, snap=0.0005):
                 side_ = "bottom" if sides == {"bottom"} else "top"
                 steps.append((R, side_, None))
                 notes.append(f"hole at ({(g['x']-ox)*scale:.3f}, {(g['y']-oy)*scale:.3f}) R{R:.4f}: depth not found in the side view")
+        # a drill that stops short of the far face with nothing else seen: look in the side view for a
+        # wider bore coming from the far face (a counterbore hidden in the plan view)
+        if steps and len(steps) == 1 and steps[0][1] in ("top", "bottom") and steps[0][2] and steps[0][2] < T - 0.01:
+            r0, s0, d0 = steps[0]
+            z_stop = T - d0 if s0 == "top" else d0               # where the drill ends
+            for rdr in readers:
+                u0 = g["x"] if rdr.horizontal else g["y"]
+                best = None
+                for k in range(1, 60):
+                    rr = r0 / scale + k * 0.002
+                    a, b = rdr.z_range(u0 - rr, tol=0.0015), rdr.z_range(u0 + rr, tol=0.0015)
+                    if a and b:
+                        lo, hi = max(a[0], b[0]), min(a[1], b[1])
+                        if s0 == "top" and lo < 0.01 and abs(hi - z_stop) < 0.01:
+                            best = (rr * scale, "bottom", hi); break
+                        if s0 == "bottom" and hi > T - 0.01 and abs(lo - z_stop) < 0.01:
+                            best = (rr * scale, "top", T - lo); break
+                if best:
+                    # exact radius from the side-view lines found
+                    rr = best[0] / scale
+                    us = [u for u, a, b in rdr.lines if min(abs(u - (u0 - rr)), abs(u - (u0 + rr))) < 0.003]
+                    if us:
+                        rr = sum(abs(u - u0) for u in us) / len(us)
+                    steps = [(r0, "thru", T), (round(rr * scale / 0.0005) * 0.0005, best[1], best[2])]
+                    break
         # a drill seen from one face that meets a counterbore from the other face goes right through
         if steps:
             r0, s0, d0 = min(steps)
@@ -371,13 +437,169 @@ def recognize(plan, side, bottom, scale, snap=0.0005):
                 bx0, by0, bx1, by1 = x0 / scale + ox, y0 / scale + oy, x1 / scale + ox, y1 / scale + oy
                 side_, d = _cut_depth(readers, lambda r: (by0, by1) if not r.horizontal else (bx0, bx1), "bottom", T)
                 cuts.append(Cut(segs, side_, d))
-    # a long edge inside the side view, parallel to the faces, means the part is not one flat thickness
+    pm = PartModel(outline, T, holes, cuts, notes)
+    _steps(pm, plan, readers, fs, body, outer, scale, M, circles, ctol)
+    _side_holes(pm, plan, readers, outer, scale, M)
+    _hidden_edge_holes(pm, plan, outer, scale, M)
+    return pm
+
+
+def _hidden_edge_holes(pm, plan, outer, scale, M):
+    """holes drilled into an edge that no view looks at: in the plan they are two parallel hidden lines
+    running in from the outline, one hole diameter apart. Placed at mid-thickness."""
+    import numpy as np
+    T = pm.thickness
+    coords = list(outer.exterior.simplify(2e-4).coords)          # one segment per straight edge
+    thin = [p for p in plan.thin if p.kind == "line"]
+    found = 0
+    for (ax, ay), (bx, by) in zip(coords, coords[1:]):
+        L = math.dist((ax, ay), (bx, by))
+        if L < 0.08:
+            continue
+        tx, ty = (bx - ax) / L, (by - ay) / L
+        nx, ny = ty, -tx                                    # one of the normals; pick the one pointing inside
+        mid = (ax + tx * L / 2 + nx * 0.01, ay + ty * L / 2 + ny * 0.01)
+        if not outer.contains(Point(mid)):
+            nx, ny = -nx, -ny
+        spans = []
+        for p in thin:
+            (px, py), (qx, qy) = p.pts[0], p.pts[-1]
+            dx, dy = qx - px, qy - py
+            ln = math.hypot(dx, dy)
+            if ln < 1e-4 or abs(dx * tx + dy * ty) / ln > 0.03:     # must run perpendicular to the edge
+                continue
+            tau = (px - ax) * tx + (py - ay) * ty
+            if tau < 0.01 or tau > L - 0.01:
+                continue
+            n0 = (px - ax) * nx + (py - ay) * ny; n1 = (qx - ax) * nx + (qy - ay) * ny
+            spans.append((tau, min(n0, n1), max(n0, n1)))
+        spans.sort(key=lambda s: (round(s[0] / 0.002), s[1]))
+        merged = []
+        for tau, a, b in spans:
+            if merged and abs(merged[-1][0] - tau) < 0.002 and a <= merged[-1][2] + 0.07:
+                merged[-1] = (merged[-1][0], min(merged[-1][1], a), max(merged[-1][2], b))
+            else:
+                merged.append((tau, a, b))
+        runs = [m for m in merged if -0.005 < m[1] < 0.03 and m[2] - m[1] > 0.04]
+        cand = []
+        for i in range(len(runs)):
+            for j in range(i + 1, len(runs)):
+                (t1, a1, b1), (t2, a2, b2) = runs[i], runs[j]
+                sp = t2 - t1
+                if sp * scale > 0.6 or sp * scale < 0.05 or abs(b1 - b2) > 0.01:
+                    continue
+                if any(t1 + 0.002 < t < t2 - 0.002 and abs(t - (t1 + t2) / 2) > 0.003 for t, a, b in runs):
+                    continue                                   # other lines in between: not one hole (a centre line is fine)
+                cand.append((sp, i, j))
+        used = set()
+        for sp, i, j in sorted(cand):                          # narrowest pairs first: a tapped hole's minor diameter
+            if i in used or j in used:
+                continue
+            (t1, a1, b1), (t2, a2, b2) = runs[i], runs[j]
+            used.update((i, j))
+            # lines just outside this pair are the same hole drawn at its thread size
+            used.update(k for k, (t, a, b) in enumerate(runs) if min(abs(t - t1), abs(t - t2)) < 0.012)
+            tc = (t1 + t2) / 2
+            ex, ey = M((ax + tx * tc, ay + ty * tc))
+            depth = (b1 + b2) / 2 * scale
+            dup = next((h for h in pm.side_holes if math.dist(h.entry, (ex, ey)) < 0.02), None)
+            if dup is not None:
+                if dup.depth < depth:
+                    dup.depth = depth                          # the plan view shows the full depth
+                continue
+            pm.side_holes.append(SideHole((ex, ey), (nx, ny), T / 2, sp * scale / 2, depth))
+            found += 1
+    if found:
+        pm.notes.append(f"{found} edge hole(s) found from hidden lines only: placed at mid-thickness, check the height")
+
+
+def _zmodel(rdr, t):
+    z = (t - rdr.t0) * rdr.scale
+    return z if rdr.top_at_high else rdr.T - z
+
+
+def _steps(pm, plan, readers, fs, body, outer, scale, M, circles, ctol):
+    """stepped thickness: the plate is `base` thick and some plan faces rise higher. A raised face is one whose
+    extent along the side view matches a flat (top edge) in that view higher than the base."""
+    T = pm.thickness
+    cands = []
     for rdr in readers:
         span = (rdr.v.x1 - rdr.v.x0) if rdr.horizontal else (rdr.v.y1 - rdr.v.y0)
-        for t, a, b in rdr._merge([f for f in rdr.flats]):
-            z = (t - rdr.t0) * scale
-            if 0.02 < z < T - 0.02 and (b - a) > 0.5 * span:
-                notes.append(f"side view shows a step at z={z if rdr.top_at_high else T - z:.4f}: the part may not be one flat "
-                             f"thickness - built {T:.4f} thick everywhere, check it")
-                break
-    return PartModel(outline, T, holes, cuts, notes)
+        for t, a, b in rdr._merge(list(rdr.vflats), gap=0.01):
+            z = _zmodel(rdr, t)
+            if 0.05 < z < T - 0.06 and (b - a) > 0.5 * span:      # lines closer to a face are edge chamfers
+                cands.append(z)
+    if not cands:
+        return
+    base = round(max(cands) / 0.0005) * 0.0005
+    raised = []
+    for f in fs:
+        if f.area < 0.03 * outer.area or f.area > 0.7 * outer.area:
+            continue
+        x0, y0, x1, y1 = f.bounds
+        for rdr in readers:
+            u0, u1 = (x0, x1) if rdr.horizontal else (y0, y1)
+            for t, a, b in rdr._merge(list(rdr.vflats), gap=0.01):
+                z = _zmodel(rdr, t)
+                chamfer = 0.001 < T - z < 0.035            # edge-break line just under the top, not a level
+                if z > base + 0.03 and not chamfer and abs(a - u0) < 0.004 and abs(b - u1) < 0.004:
+                    raised.append((f, z)); break
+            else:
+                continue
+            break
+    if not raised:
+        pm.notes.append(f"side view shows a step at z={base:.4f} but no plan area matches it - built {T:.4f} thick everywhere")
+        return
+    pm.base = base
+    for f, z in raised:
+        ring = [(k, *[M(q) for q in pts]) for k, *pts in to_segments(list(f.exterior.coords), circles, ctol)]
+        inner = [[(k, *[M(q) for q in pts]) for k, *pts in to_segments(list(r.coords), circles, ctol)] for r in f.interiors]
+        pm.raised.append(Raised(ring, inner, round(z / 0.0005) * 0.0005))
+    pm.notes.append(f"stepped part: {base:.4f} thick, {len(raised)} raised area(s) up to {max(z for _, z in raised):.4f}")
+
+
+def _side_holes(pm, plan, readers, outer, scale, M):
+    """circles in a side view are holes drilled into that edge of the part; depth from the plan view lines"""
+    T = pm.thickness
+    for rdr in readers:
+        circ = [p for p in rdr.v.prims if p.kind == "circle"]
+        if not circ:
+            continue
+        for p in circ:
+            u = p.cx if rdr.horizontal else p.cy
+            t = p.cy if rdr.horizontal else p.cx
+            z = _zmodel(rdr, t)
+            # where the hole enters: the outline edge facing this view
+            from shapely.geometry import LineString as LS
+            if rdr.horizontal:
+                ray = LS([(u, plan.y0 - 1), (u, plan.y1 + 1)])
+            else:
+                ray = LS([(plan.x0 - 1, u), (plan.x1 + 1, u)])
+            hit = outer.exterior.intersection(ray)
+            pts = [hit] if hit.geom_type == "Point" else list(getattr(hit, "geoms", []))
+            if not pts:
+                continue
+            key = {"above": lambda q: -q.y, "below": lambda q: q.y, "right": lambda q: -q.x, "left": lambda q: q.x}[rdr.where]
+            e = min(pts, key=key)
+            d = {"above": (0, -1), "below": (0, 1), "right": (-1, 0), "left": (1, 0)}[rdr.where]
+            # depth: plan-view lines along the hole axis at u +/- r, starting at the entry
+            depth = None
+            r = p.r
+            for q in plan.thin + plan.prims:
+                if q.kind != "line":
+                    continue
+                (ax, ay), (bx, by) = q.pts[0], q.pts[-1]
+                if rdr.horizontal and abs(ax - bx) < 1e-3 and min(abs(ax - (u - r)), abs(ax - (u + r))) < 0.003:
+                    far = max(abs(ay - e.y), abs(by - e.y))
+                    near = min(abs(ay - e.y), abs(by - e.y))
+                    if near < 0.03:
+                        depth = max(depth or 0, far)
+                if not rdr.horizontal and abs(ay - by) < 1e-3 and min(abs(ay - (u - r)), abs(ay - (u + r))) < 0.003:
+                    far = max(abs(ax - e.x), abs(bx - e.x)); near = min(abs(ax - e.x), abs(bx - e.x))
+                    if near < 0.03:
+                        depth = max(depth or 0, far)
+            if depth is None:
+                pm.notes.append(f"side hole R{r * scale:.4f} at z={z:.3f}: depth not found, made 2 x diameter")
+                depth = 4 * r
+            ex, ey = M((e.x, e.y))
+            pm.side_holes.append(SideHole((ex, ey), d, z, r * scale, depth * scale))

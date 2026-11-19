@@ -22,12 +22,16 @@ One STEP file per part found on the page (in mm), plus `pNN_report.json` with wh
    - holes: concentric circles from the top view (and the bottom view, mirrored); each step's depth and side
      from the lines at its edges in the side / section views (drill, counterbore, blind hole)
    - cut-outs and pockets: inner boundaries; depth from the pocket floor line in the side / section view
+   - counterbores on the far face: dashed circles in the plan, or a drill that stops short in the side view
+   - stepped thickness: a plan area whose width matches a higher top edge in the side view is raised to it
+   - holes in the edges: circles in a side view (depth from the plan), or two hidden lines running in from an
+     edge one hole-diameter apart (placed at mid-thickness, flagged in the report)
 5. **Builds** the solid with CadQuery and exports STEP.
 
-## Limits (v1)
-- One thickness per part: a part with raised areas or steps is built at full height (flagged in the report).
-- Holes drilled into side faces, threads (built at the drawn size), slanted features, and parts whose plan view is
-  rotated on the sheet are not built.
+## Limits
+- Threads are built at the drawn hole size; slanted features and parts whose plan view is rotated on the sheet are
+  not built.
+- Stepped parts: only raised areas whose edges show in a side view; pockets inside raised areas are not handled.
 - Parts that need sections to be understood (rings, lips, undercuts) are listed as "unused views".
 - The drawing scale must be given (`--scale`); detail views at other scales are ignored.
 

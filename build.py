@@ -35,7 +35,21 @@ def _solid(segs, h):
 
 def build(pm):
     T = pm.thickness
-    body = _solid(pm.outline, T)
+    if pm.base and pm.raised:
+        body = _solid(pm.outline, pm.base)
+        for rz in pm.raised:
+            try:
+                pad = _solid(rz.ring, rz.z_top)
+                for inner in rz.inner:
+                    try:
+                        pad = pad.cut(_solid(inner, rz.z_top))
+                    except Exception:
+                        pass
+                body = body.union(pad)
+            except Exception as e:
+                pm.notes.append(f"raised area skipped ({type(e).__name__})")
+    else:
+        body = _solid(pm.outline, T)
     for c in pm.cuts:
         d = c.depth if c.depth else T
         z0 = 0 if c.side in ("thru", "bottom") else T - d
@@ -57,6 +71,13 @@ def build(pm):
                 body = body.cut(cq.Workplane("XY").workplane(offset=z0).center(h.x, h.y).circle(r).extrude(hh))
             except Exception as e:
                 pm.notes.append(f"hole at ({h.x}, {h.y}) skipped ({type(e).__name__})")
+    for sh in pm.side_holes:
+        (x, y), (dx, dy) = sh.entry, sh.direction
+        try:
+            cyl = cq.Solid.makeCylinder(sh.r, sh.depth + 0.02, cq.Vector(x - 0.02 * dx, y - 0.02 * dy, sh.z), cq.Vector(dx, dy, 0))
+            body = body.cut(cq.Workplane().add(cyl))
+        except Exception as e:
+            pm.notes.append(f"side hole skipped ({type(e).__name__})")
     return body
 
 

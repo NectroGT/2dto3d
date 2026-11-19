@@ -26,7 +26,7 @@ def run(pdf, page, scale, out, units="inch"):
             s = export(body, os.path.join(out, name + ".step"), to_mm=units == "inch")
             bb = s.BoundingBox()
             results.append(dict(name=name, size_mm=[round(bb.xlen, 2), round(bb.ylen, 2), round(bb.zlen, 2)],
-                                holes=len(pm.holes), cuts=len(pm.cuts), notes=pm.notes,
+                                holes=len(pm.holes), side_holes=len(pm.side_holes), cuts=len(pm.cuts), notes=pm.notes,
                                 views=[repr(plan)] + [f"{w}: {v!r}" for w, v in side] + ([f"bottom: {bottom!r}"] if bottom else [])))
         except Exception as e:
             results.append(dict(name=name, error=f"{type(e).__name__}: {e}", views=[repr(plan)]))
