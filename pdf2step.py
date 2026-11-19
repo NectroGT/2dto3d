@@ -10,8 +10,51 @@ from recognize import group_parts, recognize
 from build import build, export
 
 
+def _apply_notes(pm, notes, thin):
+    from notes import attach, apply_hole
+    from text import TAP
+    groups, idx = [], []
+    for i, h in enumerate(pm.holes):
+        for (x, y), r in (h.drawn or []):
+            groups.append(dict(x=x, y=y, r=[(r, "")])); idx.append(i)
+    sides = [(i, h.paper) for i, h in enumerate(pm.side_holes) if h.paper]
+    hits = attach(notes, thin, groups, sides)
+    n = 0
+    for (kind, i), info in hits.items():
+        if kind == "hole":
+            ref = pm.holes[idx[i]]
+            sig = sorted(round(r, 3) for r in ref.radii_paper)
+            same = [h for h in pm.holes if h.radii_paper and sorted(round(r, 3) for r in h.radii_paper) == sig] \
+                if info.get("count", 1) > 1 else [ref]
+            for h in same:
+                apply_hole(h, info, pm.thickness, pm.notes, "")
+                n += 1
+        else:
+            ref = pm.side_holes[i]
+            same = [h for h in pm.side_holes if abs(h.r - ref.r) < 1e-3] if info.get("count", 1) > 1 else [ref]
+            for h in same:
+                if info.get("thread") in TAP:
+                    h.r = TAP[info["thread"]] / 2; h.note = info["thread"]
+                if "depth" in info:
+                    h.depth = info["depth"]
+                n += 1
+    if n:
+        pm.notes.append(f"hole notes applied to {n} hole(s)")
+
+
 def run(pdf, page, scale, out, units="inch"):
     prims, size = page_prims(pdf, page - 1)
+    notes, text_scale = [], None
+    try:
+        from text import read_words, lines, callouts, sheet_scale
+        tl = lines(read_words(pdf, page - 1))
+        notes, text_scale = callouts(tl), sheet_scale(tl)
+    except Exception as e:                       # no Tesseract: geometry only
+        print(f"(text not read: {type(e).__name__}: {e})", file=sys.stderr)
+    if scale is None:
+        if text_scale is None:
+            raise SystemExit("could not read the sheet scale - give it with --scale")
+        scale = text_scale
     views = find_views(prims, size)
     parts = group_parts(views)
     used = {id(v) for pl, sd, bt in parts for v in [pl, bt] + [x for _, x in sd] if v is not None}
@@ -39,12 +82,15 @@ def run(pdf, page, scale, out, units="inch"):
         name = f"p{page:02d}_{k:02d}"
         try:
             pm = recognize(plan, side, bottom, scale)
+            if notes and not turned:
+                _apply_notes(pm, notes, [p for p in prims if p.cls == "thin"])
             body = build(pm)
             s = export(body, os.path.join(out, name + ".step"), to_mm=units == "inch")
             bb = s.BoundingBox()
             if abs(turned) > 0:
                 pm.notes.append(f"drawn turned {turned:.2f} deg on the sheet - straightened")
-            results.append(dict(name=name, size_mm=[round(bb.xlen, 2), round(bb.ylen, 2), round(bb.zlen, 2)],
+            threads = sorted({h.note for h in pm.holes + pm.side_holes if getattr(h, "note", None)})
+            results.append(dict(name=name, scale=scale, threads=threads, size_mm=[round(bb.xlen, 2), round(bb.ylen, 2), round(bb.zlen, 2)],
                                 holes=len(pm.holes), side_holes=len(pm.side_holes), cuts=len(pm.cuts), notes=pm.notes,
                                 views=[repr(plan)] + [f"{w}: {v!r}" for w, v in side] + ([f"bottom: {bottom!r}"] if bottom else [])))
         except Exception as e:
@@ -59,7 +105,8 @@ def run(pdf, page, scale, out, units="inch"):
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("pdf"); ap.add_argument("--page", type=int, required=True)
-    ap.add_argument("--scale", type=float, required=True, help="drawing scale denominator, e.g. 3 for 1:3")
+    ap.add_argument("--scale", type=float, default=None,
+                    help="drawing scale, e.g. 3 for 1:3 (read from the title block when left out)")
     ap.add_argument("-o", "--out", default="pdf2step_out"); ap.add_argument("--units", default="inch")
     a = ap.parse_args()
     for r in run(a.pdf, a.page, a.scale, a.out, a.units):

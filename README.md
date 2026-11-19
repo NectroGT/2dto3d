@@ -4,8 +4,14 @@ Builds 3D STEP models of **plate-type parts** (flat plates, blocks, brackets wit
 **vector PDF** drawing exported from CAD (NX, SolidWorks, Creo, Inventor, Fusion ...).
 
 ```
-python pdf2step.py drawing.pdf --page 13 --scale 3 -o out/      # scale 3 = drawing scale 1:3
+python pdf2step.py drawing.pdf --page 13 -o out/                # scale read from the title block
+python pdf2step.py drawing.pdf --page 13 --scale 3 -o out/      # or give it (3 = drawing scale 1:3)
 ```
+
+Reading the sheet's text needs **Tesseract OCR** installed (Windows: the installer from
+https://github.com/UB-Mannheim/tesseract/wiki, then make sure `tesseract` runs in a terminal; macOS: `brew install
+tesseract`; Linux: `apt install tesseract-ocr`). Without it the tool still works from the geometry, but `--scale`
+is required and hole notes are not used.
 One STEP file per part found on the page (in mm), plus `pNN_report.json` with what was found and anything to check.
 
 ## How it works
@@ -26,12 +32,16 @@ One STEP file per part found on the page (in mm), plus `pNN_report.json` with wh
    - stepped thickness: a plan area whose width matches a higher top edge in the side view is raised to it
    - holes in the edges: circles in a side view (depth from the plan), or two hidden lines running in from an
      edge one hole-diameter apart (placed at mid-thickness, flagged in the report)
-5. **Builds** the solid with CadQuery and exports STEP.
+5. **Reads the text** (OCR on the lettering, which CAD exports usually draw as outlines): the title block scale and
+   the hole notes. A note is matched to its hole by following its leader line; "6X #10-24 UNC ↧.50", "26X Ø.21 THRU",
+   "⌴Ø.38 ↧.205" set the drill size (tap drill for threads), depth, through or counterbore of every hole of that
+   kind. Threads found are listed in the report.
+6. **Builds** the solid with CadQuery and exports STEP.
 
 ## Limits
 - Threads are built at the drawn hole size; slanted features are not built.
 - Stepped parts: only raised areas whose edges show in a side view; pockets inside raised areas are not handled.
 - Parts that need sections to be understood (rings, lips, undercuts) are listed as "unused views".
-- The drawing scale must be given (`--scale`); detail views at other scales are ignored.
+- Detail views at other scales are ignored, and so are notes that only point into a detail view.
 
 `compare.py auto.step reference.step` reports the volume overlap between an auto model and a reference.

@@ -12,6 +12,10 @@ class Hole:
     x: float
     y: float
     steps: list            # [(radius, side, depth)] side "top"/"bottom"/"thru"
+    note: str = None       # thread from the hole note, e.g. "#10-24"
+    paper: tuple = None    # centre on the sheet (inches)
+    radii_paper: list = None
+    drawn: list = None     # [((x, y), r)] every place the hole is drawn on the sheet
 
 
 @dataclass
@@ -28,6 +32,8 @@ class SideHole:
     z: float
     r: float
     depth: float
+    note: str = None
+    paper: tuple = None    # a point on the sheet where this hole is drawn
 
 
 @dataclass
@@ -296,11 +302,12 @@ def recognize(plan, side, bottom, scale, snap=0.0005):
 
     # holes: concentric circles (top view visible, bottom view visible mirrored)
     groups = []
-    def add_circle(cx, cy, r, side):
+    def add_circle(cx, cy, r, side, at=None):
+        at = at or (cx, cy)                     # where it is drawn (bottom-view circles are drawn elsewhere)
         for g in groups:
             if math.dist((g["x"], g["y"]), (cx, cy)) < 0.003:
-                g["r"].append((r, side)); return
-        groups.append(dict(x=cx, y=cy, r=[(r, side)]))
+                g["r"].append((r, side)); g["at"].append((at, r)); return
+        groups.append(dict(x=cx, y=cy, r=[(r, side)], at=[(at, r)]))
     for p in plan.prims:
         if p.kind == "circle" and Point(p.cx, p.cy).within(body.buffer(1e-3)) and p.r < 0.45 * min(plan.w, plan.h):
             add_circle(p.cx, p.cy, p.r, "top")
@@ -333,11 +340,11 @@ def recognize(plan, side, bottom, scale, snap=0.0005):
             for ring in _material_face(fb0).interiors:
                 c = circle_of_ring(ring, 0.0015)
                 if c and c[2] < 0.45 * min(plan.w, plan.h):
-                    add_circle(c[0] - bottom.x0 + plan.x0, plan.y1 - (c[1] - bottom.y0), c[2], "bottom")
+                    add_circle(c[0] - bottom.x0 + plan.x0, plan.y1 - (c[1] - bottom.y0), c[2], "bottom", (c[0], c[1]))
         for p in bottom.prims:
             if p.kind == "circle":
                 # bottom view = plan mirrored top-to-bottom
-                add_circle(p.cx - bottom.x0 + plan.x0, plan.y1 - (p.cy - bottom.y0), p.r, "bottom")
+                add_circle(p.cx - bottom.x0 + plan.x0, plan.y1 - (p.cy - bottom.y0), p.r, "bottom", (p.cx, p.cy))
 
     holes = []
     for g in groups:
@@ -405,7 +412,7 @@ def recognize(plan, side, bottom, scale, snap=0.0005):
                 if R > r0 and s0 in ("top", "bottom") and sd in ("top", "bottom") and sd != s0 and d and d0 and d + d0 >= T - 0.01:
                     steps[steps.index(min(steps))] = (r0, "thru", T)
                     break
-        holes.append(Hole(*M((g["x"], g["y"])), steps))
+        holes.append(Hole(*M((g["x"], g["y"])), steps, paper=(g["x"], g["y"]), radii_paper=[r for r, _ in g["r"]], drawn=g["at"]))
 
     # inner boundaries that are not circles: cut-outs / pockets
     cuts = []
@@ -507,7 +514,8 @@ def _hidden_edge_holes(pm, plan, outer, scale, M):
                 if dup.depth < depth:
                     dup.depth = depth                          # the plan view shows the full depth
                 continue
-            pm.side_holes.append(SideHole((ex, ey), (nx, ny), T / 2, sp * scale / 2, depth))
+            pc = (ax + tx * tc + nx * depth / scale / 2, ay + ty * tc + ny * depth / scale / 2)
+            pm.side_holes.append(SideHole((ex, ey), (nx, ny), T / 2, sp * scale / 2, depth, paper=pc))
             found += 1
     if found:
         pm.notes.append(f"{found} edge hole(s) found from hidden lines only: placed at mid-thickness, check the height")
@@ -602,4 +610,4 @@ def _side_holes(pm, plan, readers, outer, scale, M):
                 pm.notes.append(f"side hole R{r * scale:.4f} at z={z:.3f}: depth not found, made 2 x diameter")
                 depth = 4 * r
             ex, ey = M((e.x, e.y))
-            pm.side_holes.append(SideHole((ex, ey), d, z, r * scale, depth * scale))
+            pm.side_holes.append(SideHole((ex, ey), d, z, r * scale, depth * scale, paper=(p.cx, p.cy)))
