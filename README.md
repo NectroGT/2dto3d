@@ -1,4 +1,4 @@
-# pdf2step
+# 2dto3d (pdf2step)
 
 Builds 3D STEP models of **plate-type parts** (flat plates, blocks, brackets with holes and pockets) from a
 **vector PDF** drawing exported from CAD (NX, SolidWorks, Creo, Inventor, Fusion ...).
