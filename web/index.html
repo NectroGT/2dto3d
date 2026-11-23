@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>PDF to STEP</title>
+<link rel="icon" type="image/png" href="/web/logo.png">
 <style>
 :root {
   --bg: #f6f7f9; --panel: #ffffff; --text: #1b1f24; --muted: #5f6b7a; --line: #dde2e8;
@@ -20,7 +21,8 @@
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
 header { padding: 20px 24px 8px; max-width: 1280px; margin: 0 auto; }
-h1 { font-size: 22px; margin: 0 0 2px; }
+h1 { font-size: 22px; margin: 0 0 2px; display: flex; align-items: center; gap: 10px; }
+h1 img { width: 36px; height: 36px; }
 header p { margin: 0; color: var(--muted); }
 main { max-width: 1280px; margin: 0 auto; padding: 12px 24px 48px; }
 
@@ -80,7 +82,7 @@ details summary { cursor: pointer; color: var(--muted); font-size: 13.5px; }
 </head>
 <body>
 <header>
-  <h1>PDF to STEP</h1>
+  <h1><img src="/web/logo.png" alt="">PDF to STEP</h1>
   <p>Upload a CAD drawing (vector PDF). Every page is scanned for plate-type parts that can be built in 3D.</p>
 </header>
 <main>

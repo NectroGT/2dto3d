@@ -117,6 +117,11 @@ def index():
     return send_from_directory(os.path.join(HERE, "web"), "index.html")
 
 
+@app.get("/web/<path:name>")
+def web_file(name):
+    return send_from_directory(os.path.join(HERE, "web"), name)
+
+
 @app.post("/api/upload")
 def upload():
     f = request.files.get("pdf")
