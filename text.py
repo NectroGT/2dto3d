@@ -1,6 +1,6 @@
 """Read the sheet's text. CAD exports often draw text as filled outlines, not as PDF text, so the page is
 rendered, every stroked line is painted out, and what is left (lettering) goes through Tesseract OCR."""
-import math, re
+import math, os, re
 import numpy as np
 import pymupdf
 from PIL import Image, ImageDraw
@@ -50,7 +50,13 @@ def read_words(pdf, pageno):
             from rapidocr_onnxruntime import RapidOCR    # older package, Python < 3.13
             new_api = False
         if _RAPID is None:
-            _RAPID = RapidOCR()
+            threads = int(os.environ.get("PDF2STEP_OCR_THREADS", "-1"))   # set when pages run side by side
+            if new_api:
+                _RAPID = RapidOCR(params={"Global.log_level": "warning",
+                                          "EngineConfig.onnxruntime.intra_op_num_threads": threads,
+                                          "EngineConfig.onnxruntime.inter_op_num_threads": 1 if threads > 0 else -1})
+            else:
+                _RAPID = RapidOCR()
         im, k, Hpt = text_layer(pdf, pageno, dpi=300)
         r = _RAPID(np.array(im.convert("RGB")))
         if new_api:

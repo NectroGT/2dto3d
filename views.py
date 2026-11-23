@@ -64,17 +64,21 @@ def find_views(prims, page_size, gap=0.08):
     vis = [p for p in prims if p.cls == "visible"]
     if not vis:
         return []
-    boxes = np.array([p.bbox() for p in vis])
+    boxes = [p.bbox() for p in vis]           # plain lists: much faster than numpy for one value at a time
     f, u = _union_find(len(vis))
-    order = np.argsort(boxes[:, 0])
-    # sweep in x to join boxes that overlap (expanded by gap)
+    order = sorted(range(len(vis)), key=lambda i: boxes[i][0])
+    # sweep in x to join boxes that overlap (expanded by gap); pairs already in one group need no test
     active = []
     for i in order:
-        x0 = boxes[i, 0] - gap
-        active = [j for j in active if boxes[j, 2] + gap >= x0]
+        bx0, by0, _, by1 = boxes[i]
+        x0 = bx0 - 2 * gap
+        active = [j for j in active if boxes[j][2] >= x0]
+        ri = f(i)
         for j in active:
-            if boxes[j, 1] - gap <= boxes[i, 3] and boxes[i, 1] - gap <= boxes[j, 3] and _touch(vis[i], vis[j], gap):
+            b = boxes[j]
+            if b[1] - gap <= by1 and by0 - gap <= b[3] and f(j) != ri and _touch(vis[i], vis[j], gap):
                 u(i, j)
+                ri = f(i)
         active.append(i)
     groups = {}
     for i in range(len(vis)):

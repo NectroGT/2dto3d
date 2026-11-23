@@ -12,6 +12,23 @@ python pdf2step.py drawing.pdf --page 13 --scale 3 -o out/      # or give it (3 
 (RapidOCR, which runs locally). If RapidOCR is not installed, Tesseract is used when it is on the PATH; with neither,
 the tool works from the geometry only and `--scale` is required.
 
+## Web app
+```
+python app.py          # then open http://127.0.0.1:5000
+```
+Upload a PDF and every page is scanned for parts that can be built (a plan view with a lined-up side view).
+Pages that cannot be used say why (assembly drawing, scanned image, only 3D views, no side view lined up), and
+usable pages that look like an assembly are flagged for a check. Convert one page or all usable pages, turn each
+part around in a 3D preview, and download the STEP files one by one or as a zip. Pages are scanned and converted
+side by side in up to 4 worker processes; the text read by the scan is kept, so converting does not run OCR again.
+Uploads and results are kept in `web_jobs/`.
+
+The same scan from the command line:
+```
+python scan.py drawing.pdf              # one line per page: usable, or why not
+python scan.py drawing.pdf --no-text    # geometry only (faster, no assembly check)
+```
+
 ## How it works
 1. **Reads the lines, not a picture.** The PDF keeps the drawing as true lines, arcs and circles. Thick
    strokes are visible edges; thin strokes are hidden / centre / dimension lines; filled shapes (text, arrow

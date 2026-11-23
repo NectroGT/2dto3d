@@ -6,7 +6,7 @@ import argparse, json, math, os, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from extract import page_prims
 from views import find_views, dominant_angle, rotate_prims
-from recognize import group_parts, recognize
+from recognize import group_parts, recognize, turned_parts
 from build import build, export
 
 
@@ -77,12 +77,13 @@ def _part_scale(text_lines, plan, sheet_scale):
     return best[1] if best else sheet_scale
 
 
-def run(pdf, page, scale, out, units="inch"):
+def run(pdf, page, scale, out, units="inch", words=None):
+    """words: the page's text if already read ([(text, x0, y0, x1, y1)], as text.read_words gives it)"""
     prims, size = page_prims(pdf, page - 1)
     notes, text_scale, text_lines = [], None, []
     try:
         from text import read_words, lines, callouts, sheet_scale
-        tl = lines(read_words(pdf, page - 1))
+        tl = lines(words if words is not None else read_words(pdf, page - 1))
         notes, text_scale = callouts(tl), sheet_scale(tl)
         text_lines = tl
     except Exception as e:                       # no Tesseract: geometry only
@@ -104,21 +105,7 @@ def run(pdf, page, scale, out, units="inch"):
     parts = group_parts(views_main)
     used = {id(v) for pl, sd, bt in parts for v in [pl, bt] + [x for _, x in sd] if v is not None}
     unused = [v for v in views_main if id(v) not in used and not v.iso and v.w * v.h > 0.01]
-    # views drawn turned on the sheet: straighten each group of same-angle views and pair them again
-    tilted = {}
-    for v in unused:
-        a = dominant_angle(v)
-        if abs(a) > 1.0:
-            key = next((k for k in tilted if abs(k - a) < 0.5), a)
-            tilted.setdefault(key, []).append(v)
-    rotated_parts = []
-    thin_all = [p for p in prims if p.cls == "thin"]
-    for a, vs in tilted.items():
-        sub = rotate_prims([p for v in vs for p in v.prims] + thin_all, -a)
-        rviews = find_views(sub, (1e3, 1e3))
-        for pr in group_parts(rviews):
-            rotated_parts.append((pr, a))
-            used.update(id(v) for v in vs)
+    rotated_parts = turned_parts(unused, prims, used)
     parts = [(p_, 0.0) for p_ in parts] + rotated_parts
     skipped = [repr(v) for v in unused if id(v) not in used and v.w * v.h > 0.05]
     os.makedirs(out, exist_ok=True)
@@ -151,6 +138,26 @@ def run(pdf, page, scale, out, units="inch"):
         results.append(dict(name=f"p{page:02d}_unused_views", note="no aligned side view found - not built", views=skipped))
     with open(os.path.join(out, f"p{page:02d}_report.json"), "w") as f:
         json.dump(results, f, indent=1)
+    return results
+
+
+def convert_page(pdf, page, scale, out, units="inch", words=None):
+    """run() plus an STL mesh of each built part (for previews). Returns run()'s results."""
+    import shutil
+    import cadquery as cq
+    shutil.rmtree(out, ignore_errors=True)
+    try:
+        results = run(pdf, page, scale, out, units, words)
+    except SystemExit as e:                    # unreadable scale: a plain error, not the end of the worker
+        raise ValueError(str(e)) from None
+    for r in results:
+        step = os.path.join(out, r["name"] + ".step")
+        if "size_mm" in r and os.path.exists(step):
+            try:
+                shape = cq.importers.importStep(step)
+                cq.exporters.export(shape, os.path.join(out, r["name"] + ".stl"), tolerance=0.05, angularTolerance=0.2)
+            except Exception:
+                pass
     return results
 
 

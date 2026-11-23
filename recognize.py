@@ -90,6 +90,27 @@ def group_parts(views, pair_tol=0.03):
 
 
 # ---------------------------------------------------------------- geometry helpers
+def turned_parts(unused, prims, used):
+    """views drawn turned on the sheet: straighten each group of same-angle views and pair them again.
+    Returns [((plan, side, bottom), angle)]; the ids of the views used are added to `used`."""
+    from views import find_views, dominant_angle, rotate_prims
+    tilted = {}
+    for v in unused:
+        a = dominant_angle(v)
+        if abs(a) > 1.0:
+            key = next((k for k in tilted if abs(k - a) < 0.5), a)
+            tilted.setdefault(key, []).append(v)
+    rotated_parts = []
+    thin_all = [p for p in prims if p.cls == "thin"]
+    for a, vs in tilted.items():
+        sub = rotate_prims([p for v in vs for p in v.prims] + thin_all, -a)
+        rviews = find_views(sub, (1e3, 1e3))
+        for pr in group_parts(rviews):
+            rotated_parts.append((pr, a))
+            used.update(id(v) for v in vs)
+    return rotated_parts
+
+
 def _geoms(prims):
     out = []
     for p in prims:
