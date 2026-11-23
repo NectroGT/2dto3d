@@ -248,12 +248,11 @@ function partBox(p, r) {
   if (r.cuts) facts.push(`${r.cuts} cut-out${r.cuts === 1 ? "" : "s"}`);
   if (r.threads && r.threads.length) facts.push("threads " + r.threads.join(", "));
   facts.push("scale 1:" + r.scale);
-  const notes = (r.notes || []).filter((n) => !/^hole notes applied/.test(n));
   return `<div class="part"><div class="row"><b>${esc(r.name)}</b><span>
       <button class="v3d" data-name="${esc(r.name)}">View 3D</button>
-      <a class="btn" href="/api/job/${job.id}/file/${p.page}/${encodeURIComponent(r.name)}.step">STEP</a></span></div>
+      <a class="btn" href="/api/job/${job.id}/file/${p.page}/${encodeURIComponent(r.name)}.step" download title="Download the STEP file" aria-label="Download the STEP file"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 20h14"/></svg></a></span></div>
     <div class="info">${esc(facts.join(" · "))}</div>
-    ${notes.length ? `<ul>${notes.map((n) => `<li>${esc(n)}</li>`).join("")}</ul>` : ""}</div>`;
+    </div>`;
 }
 
 function wire(c, p) {
