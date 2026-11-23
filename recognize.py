@@ -538,6 +538,7 @@ def recognize(plan, side, bottom, scale, snap=0.0005):
                 notes.append(f"turned part (round) - {len(bores)} axial bore(s)")
                 return pm
     _steps(pm, plan, readers, fs, body, outer, scale, M, circles, ctol)
+    _grooves(pm, plan, readers, fs, body, outer, scale, M, circles, ctol)
     _side_holes(pm, plan, readers, outer, scale, M)
     _hidden_edge_holes(pm, plan, outer, scale, M)
     return pm
@@ -656,6 +657,207 @@ def _steps(pm, plan, readers, fs, body, outer, scale, M, circles, ctol):
         inner = [[(k, *[M(q) for q in pts]) for k, *pts in to_segments(list(r.coords), circles, ctol)] for r in f.interiors]
         pm.raised.append(Raised(ring, inner, round(z / 0.0005) * 0.0005))
     pm.notes.append(f"stepped part: {base:.4f} thick, {len(raised)} raised area(s) up to {max(z for _, z in raised):.4f}")
+
+
+def _dash_curves(prims, gap=0.06, ang=12.0):
+    """hidden edges are drawn dashed: chain the short line pieces that line up (end to end, same direction)
+    into whole curves. Returns [LineString], each through its pieces' end points in order along the curve."""
+    segs = []
+    for p in prims:
+        if p.kind != "line":
+            continue
+        (ax, ay), (bx, by) = p.pts[0], p.pts[-1]
+        L = math.hypot(bx - ax, by - ay)
+        if L > 0.004:
+            segs.append(((ax, ay), (bx, by), ((bx - ax) / L, (by - ay) / L)))
+    n = len(segs)
+    if n < 2:
+        return []
+    par = list(range(n))
+    def find(i):
+        while par[i] != i:
+            par[i] = par[par[i]]; i = par[i]
+        return i
+    s_ang = math.sin(math.radians(ang))
+    order = sorted(range(n), key=lambda i: min(segs[i][0][0], segs[i][1][0]))
+    for k, i in enumerate(order):
+        pi, qi, di = segs[i]
+        xi1 = max(pi[0], qi[0])
+        for j in order[k + 1:]:
+            pj, qj, dj = segs[j]
+            if min(pj[0], qj[0]) > xi1 + gap:
+                break
+            if abs(di[0] * dj[1] - di[1] * dj[0]) > s_ang:
+                continue                               # not the same direction
+            e1, e2 = min(((a, b) for a in (pi, qi) for b in (pj, qj)), key=lambda e: math.dist(*e))
+            d = math.dist(e1, e2)
+            if d > gap:
+                continue
+            if d > 1e-4 and abs(di[0] * (e2[1] - e1[1]) - di[1] * (e2[0] - e1[0])) > s_ang * d + 0.002:
+                continue                               # the gap does not continue the line
+            par[find(i)] = find(j)
+    comps = {}
+    for i in range(n):
+        comps.setdefault(find(i), []).append(i)
+    out = []
+    for idx in comps.values():
+        if len(idx) < 3:
+            continue
+        pts = [q for i in idx for q in segs[i][:2]]
+        xs = [q[0] for q in pts]; ys = [q[1] for q in pts]
+        horiz = (max(xs) - min(xs)) >= (max(ys) - min(ys))
+        if not horiz:
+            pts = [(q[1], q[0]) for q in pts]
+        # a doubled (thick) dashed stroke chains as two rows: average across them in short bins along the curve
+        pts.sort()
+        lo, hi = pts[0][0], pts[-1][0]
+        if hi - lo < 0.08:
+            continue
+        nb = max(2, int((hi - lo) / 0.02))
+        bins = [[] for _ in range(nb + 1)]
+        for u, v in pts:
+            bins[min(nb, int((u - lo) / (hi - lo) * nb))].append((u, v))
+        line = [(sum(q[0] for q in b) / len(b), sum(q[1] for q in b) / len(b)) for b in bins if b]
+        if not horiz:
+            line = [(v, u) for u, v in line]
+        if len(line) >= 2:
+            out.append(LineString(line))
+    return out
+
+
+def _extend(ls, d):
+    """the line with both ends pushed out by d along their directions (dashes stop short of the edges)"""
+    c = list(ls.coords)
+    def push(pts):                             # direction over a stretch of the curve, not just the last piece
+        b = pts[0]
+        a = next((q for q in pts[1:] if math.dist(q, b) >= 0.05), pts[-1])
+        L = math.dist(a, b) or 1.0
+        return (b[0] + (b[0] - a[0]) / L * d, b[1] + (b[1] - a[1]) / L * d)
+    return LineString([push(c)] + c + [push(c[::-1])])
+
+
+def _hidden_bands(thin, outer, edge):
+    """strips between neighbouring dashed curves that both cross the part from edge to edge, trimmed to
+    the outline (the edges of a groove on the far face)"""
+    curves = []
+    for c in _dash_curves(thin):
+        e = _extend(c, 0.04)
+        if len([g for g in getattr(e.intersection(edge), "geoms", [e.intersection(edge)]) if not g.is_empty]) >= 2:
+            cs = list(c.coords)
+            horiz = abs(cs[-1][0] - cs[0][0]) >= abs(cs[-1][1] - cs[0][1])
+            curves.append((horiz, c, e))
+    def along(c, horiz):
+        x0, y0, x1, y1 = c.bounds
+        return (x0, x1) if horiz else (y0, y1)
+    def across(c, horiz):
+        return c.centroid.y if horiz else c.centroid.x
+    bands = []
+    for i, (h, a, ae) in enumerate(curves):
+        a0, a1 = along(a, h)
+        best = None
+        for j, (h2, b, be) in enumerate(curves):
+            if j == i or h2 != h:
+                continue
+            b0, b1 = along(b, h)
+            if min(a1, b1) - max(a0, b0) < 0.8 * min(a1 - a0, b1 - b0):
+                continue                               # not the same stretch of the part
+            d = across(b, h) - across(a, h)
+            if 0 < d < 0.5 and (best is None or d < best[0]):
+                best = (d, be)
+        if best is None:
+            continue
+        ring = list(ae.coords) + list(reversed(best[1].coords))
+        try:
+            band = Polygon(ring).buffer(0).intersection(outer)
+        except Exception:
+            continue
+        if band.geom_type != "Polygon":
+            band = max(getattr(band, "geoms", []), key=lambda g: g.area, default=None)
+        if band is not None and not band.is_empty and band.area > 0:
+            bands.append(band)
+    return bands
+
+
+def _grooves(pm, plan, readers, fs, body, outer, scale, M, circles, ctol):
+    """grooves across the part: a plan band running from one edge of the outline to another (not an inner
+    ring, so not a pocket) whose span in a side view holds a floor line between the faces. A groove on the
+    near face is bounded by visible lines, one on the far face by dashed hidden lines. It opens on the face
+    its side walls run up to; the floor is the middle of the floor line's (thick) stroke. Of the bands that
+    match one floor only the widest are the groove (narrow ones are the tangent lines of edge rounds)."""
+    T = pm.thickness
+    if T <= 0:
+        return
+    edge = outer.exterior.buffer(0.006)
+    cands = [(f, "visible") for f in fs if f is not body]
+    cands += [(g, "hidden") for g in _hidden_bands(plan.thin, outer, edge)]
+    matches = []
+    for f, kind in cands:
+        if f.area < 0.002 * outer.area or f.area > 0.3 * outer.area or list(f.interiors):
+            continue
+        touch = f.exterior.intersection(edge)
+        pieces = [g for g in getattr(touch, "geoms", [touch]) if not g.is_empty and g.length > 0.004]
+        if len(pieces) < 2:
+            continue                                   # does not run edge to edge
+        x0, y0, x1, y1 = f.bounds
+        for ri, rdr in enumerate(readers):
+            u0, u1 = (x0, x1) if rdr.horizontal else (y0, y1)
+            hits = []
+            for t, a, b in rdr._merge(list(rdr.vflats), gap=0.01):
+                z = _zmodel(rdr, t)
+                if not (0.035 < z < T - 0.035) or b - a < 0.3 * (u1 - u0):
+                    continue
+                ov = min(b, u1) - max(a, u0)
+                if ov >= 0.6 * (b - a) and a > u0 - 0.015 and b < u1 + 0.015:
+                    hits.append((z, a, b))
+            if not hits:
+                continue
+            # the walls: lines across the thickness at the floor line's ends; which face do they reach?
+            a = min(h[1] for h in hits); b = max(h[2] for h in hits)
+            zr = [rdr.z_range(u, tol=0.006) for u in (a, b)]
+            top = any(r and r[1] > T - 0.04 for r in zr)   # (thick strokes: a face line sits a little inside)
+            bot = any(r and r[0] < 0.04 for r in zr)
+            if top == bot:
+                continue                               # walls reach both faces or neither: not a groove
+            if (kind == "hidden") == top:
+                continue                               # hidden edges belong to the far face, visible ones to the near
+            zs = sorted(h[0] for h in hits)
+            if top:                                    # deepest cluster seen from the top face
+                cl = [z for z in zs if z < zs[0] + 0.03]
+                side_, depth = "top", T - (min(cl) + max(cl)) / 2
+            else:
+                cl = [z for z in zs if z > zs[-1] - 0.03]
+                side_, depth = "bottom", (min(cl) + max(cl)) / 2
+            depth = round(depth / 0.0005) * 0.0005
+            if not 0.03 < depth < T - 0.03:
+                continue
+            width = 2 * f.area / f.length              # about the band's width, for a long thin band
+            matches.append(dict(f=f, kind=kind, key=(ri, round(a, 2), round(b, 2)), side=side_, depth=depth, width=width))
+            break
+    # a narrow band lying against a wider matched band is the tangent strip of an edge round, not a groove
+    kept = []
+    for m in sorted(matches, key=lambda m: -m["width"]):
+        if not any(m["f"].distance(k["f"]) < 0.01 and m["width"] < 0.7 * k["width"] for k in kept):
+            kept.append(m)
+    found = []
+    for m in kept:
+        f = m["f"]
+        if m["kind"] == "visible":
+            # join the thin outline-stroke slivers at its ends, so no skin of material is left at the edge
+            region = f
+            for g in fs:
+                if g is f or g is body or g.area > 0.15 * f.area:
+                    continue
+                if g.distance(f) < 1e-6 and g.exterior.intersection(edge).length > 0.5 * g.length / 2:
+                    region = region.union(g)
+        else:
+            region = f.buffer(0.004, join_style=2)     # a hidden band stops at the outline's inner stroke edge
+        if region.geom_type != "Polygon":
+            region = max(region.geoms, key=lambda q: q.area)
+        ring = [(k, *[M(q) for q in pts]) for k, *pts in to_segments(list(region.exterior.coords), circles, ctol)]
+        pm.cuts.append(Cut(ring, m["side"], m["depth"]))
+        found.append(m["depth"])
+    if found:
+        pm.notes.append(f"{len(found)} groove(s) across the part, {', '.join(f'{d:.4f}' for d in sorted(set(found)))} deep")
 
 
 def _side_holes(pm, plan, readers, outer, scale, M):
