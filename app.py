@@ -80,7 +80,7 @@ def start_convert(job, n):
         with open(wpath, encoding="utf-8") as f:
             words = [tuple(w) for w in json.load(f)]
     out = os.path.join(job["dir"], f"p{n:02d}")
-    fut = pool().submit(convert_page, job["pdf"], n, p.get("scale"), out, job.get("units", "inch"), words)
+    fut = pool().submit(convert_page, job["pdf"], n, p.get("scale"), out, words=words)
     futures[(job["id"], n)] = fut
 
     def done(fut):
@@ -138,7 +138,6 @@ def upload():
         shutil.rmtree(d, ignore_errors=True)
         return jsonify(error=f"could not open the PDF: {e}"), 400
     job = dict(id=job_id, name=f.filename, pdf=path, dir=d, created=time.time(), scanned=False,
-               units=request.form.get("units", "inch"),
                pages=[dict(page=i + 1, scan="waiting") for i in range(n)])
     with lock:
         jobs[job_id] = job
@@ -162,8 +161,6 @@ def convert(job_id):
     job = get_job(job_id)
     body = request.get_json(silent=True) or {}
     with lock:
-        if "units" in body:
-            job["units"] = "mm" if body["units"] == "mm" else "inch"
         pages = body.get("pages")
         if pages == "usable":
             pages = [p["page"] for p in job["pages"] if p.get("scan") == "usable"]
@@ -193,7 +190,7 @@ def thumb(job_id, page):
 @app.get("/api/job/<job_id>/file/<int:page>/<name>")
 def part_file(job_id, page, name):
     job = get_job(job_id)
-    if not name.endswith((".step", ".stl", ".json")) or "/" in name or "\\" in name or ".." in name:
+    if not name.endswith((".step", ".stl", ".json", ".png")) or "/" in name or "\\" in name or ".." in name:
         abort(404)
     d = os.path.join(job["dir"], f"p{page:02d}")
     return send_from_directory(d, name, as_attachment=name.endswith(".step"))

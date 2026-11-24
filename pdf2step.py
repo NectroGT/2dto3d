@@ -1,6 +1,6 @@
 """pdf2step: build 3D STEP models of plate-type parts from a vector PDF drawing.
 
-usage: python pdf2step.py drawing.pdf --page 13 --scale 3 [-o outdir] [--units inch|mm]
+usage: python pdf2step.py drawing.pdf --page 13 --scale 3 [-o outdir]
 Each part on the page needs a plan view and at least one side view next to it (third-angle)."""
 import argparse, json, math, os, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -134,6 +134,18 @@ def run(pdf, page, scale, out, units="inch", words=None):
                                 views=[repr(plan)] + [f"{w}: {v!r}" for w, v in side] + ([f"bottom: {bottom!r}"] if bottom else [])))
         except Exception as e:
             results.append(dict(name=name, error=f"{type(e).__name__}: {e}", views=[repr(plan)]))
+    # 3D pictures on the sheet, cut out as reference images for the preview (shown, never measured)
+    try:
+        from refview import find_references, save_references, nearest
+        taken = [(v.x0, v.y0, v.x1, v.y1) for v in views
+                 if id(v) in used or id(v) in detail_views or id(v) in section_views]
+        refs = find_references(pdf, page - 1, taken, text_lines)
+        names = save_references(pdf, page - 1, refs, out, f"p{page:02d}")
+        for r, ((plan, _, _), turned) in zip(results, parts):
+            if names and "size_mm" in r:
+                r["ref"] = nearest(refs, names, (plan.x0 + plan.x1) / 2, (plan.y0 + plan.y1) / 2, size[1])                     if not turned else names[0]
+    except Exception as e:
+        print(f"(reference pictures skipped: {type(e).__name__}: {e})", file=sys.stderr)
     if details:
         results.append(dict(name=f"p{page:02d}_details", details=[f"DETAIL {d['name']} x{d['k']:g} on {d['parent']!r}" for d in details]))
     if skipped:
@@ -168,7 +180,7 @@ if __name__ == "__main__":
     ap.add_argument("pdf"); ap.add_argument("--page", type=int, required=True)
     ap.add_argument("--scale", type=float, default=None,
                     help="drawing scale, e.g. 3 for 1:3 (read from the title block when left out)")
-    ap.add_argument("-o", "--out", default="pdf2step_out"); ap.add_argument("--units", default="inch")
+    ap.add_argument("-o", "--out", default="pdf2step_out")
     a = ap.parse_args()
-    for r in run(a.pdf, a.page, a.scale, a.out, a.units):
+    for r in run(a.pdf, a.page, a.scale, a.out):
         print(json.dumps(r))

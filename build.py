@@ -24,7 +24,24 @@ def _wire(segs, arcs=True):
     return wp.close()
 
 
+def _full_circles(segs):
+    """an outline that is one whole circle comes as one arc ending where it starts (its middle point is
+    opposite the start): split it into two half arcs so it makes a wire"""
+    out = []
+    for s in segs:
+        if s[0] == "arc" and math.dist(s[1], s[3]) < 1e-6 and math.dist(s[1], s[2]) > 1e-4:
+            (x0, y0), (xm, ym) = s[1], s[2]
+            cx, cy = (x0 + xm) / 2, (y0 + ym) / 2
+            dx, dy = x0 - cx, y0 - cy
+            out.append(("arc", (x0, y0), (cx - dy, cy + dx), (xm, ym)))
+            out.append(("arc", (xm, ym), (cx + dy, cy - dx), (x0, y0)))
+        else:
+            out.append(s)
+    return out
+
+
 def _solid(segs, h):
+    segs = _full_circles(segs)
     if len(segs) < 2:
         raise ValueError("empty ring")
     for arcs in (True, False):
@@ -81,6 +98,13 @@ def build(pm):
             body = body.cut(_solid(c.ring, h).translate((0, 0, z0)))
         except Exception as e:
             pm.notes.append(f"cut-out skipped ({type(e).__name__})")
+    for x, y, r, z0, z1, bholes in pm.bosses:          # posts standing in a pocket, holes from their top
+        try:
+            body = body.union(cq.Workplane("XY").workplane(offset=z0 - 1e-4).center(x, y).circle(r).extrude(z1 - z0 + 1e-4))
+            for rh, d in bholes:
+                body = body.cut(cq.Workplane("XY").workplane(offset=z1 - d).center(x, y).circle(rh).extrude(d + 1e-3))
+        except Exception as e:
+            pm.notes.append(f"boss at ({x:.3f}, {y:.3f}) skipped ({type(e).__name__})")
     for h in pm.holes:
         for r, side, depth in sorted(h.steps):
             d = depth if depth else T * 0.5
@@ -134,6 +158,16 @@ def _turned(pm):
         prof = [(x, y - axis) for x, y in half.exterior.coords[:-1]]
         prof = [(x, max(r, 0.0)) for x, r in prof]
         body = cq.Workplane("XY").polyline(prof).close().revolve(360, (0, 0, 0), (1, 0, 0))
+    # keyways: the slot's outline from the plan, cut from its floor (depth = floor above the axis) outwards
+    R = max(abs(v) for q in prof for v in (q[0] if kind == "x" else q[1],)) + 0.01
+    for c in pm.cuts:
+        dx, dy = (-axis, 0) if kind == "x" else (0, -axis)
+        z0, h = (c.depth, R - c.depth) if c.side == "top" else (-R, R - c.depth)
+        try:
+            slot = _solid(c.ring, h).translate((dx, dy, z0))
+            body = body.cut(slot)
+        except Exception as e:
+            pm.notes.append(f"keyway skipped ({type(e).__name__})")
     return body
 
 

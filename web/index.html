@@ -30,7 +30,6 @@ main { max-width: 1280px; margin: 0 auto; padding: 12px 24px 48px; }
 #drop.over { border-color: var(--accent); }
 #drop strong { display: block; font-size: 17px; margin-bottom: 4px; }
 #drop span { color: var(--muted); }
-#drop .opts { margin-top: 14px; color: var(--muted); font-size: 14px; }
 
 button, .btn { font: inherit; border: 1px solid var(--line); background: var(--panel); color: var(--text); border-radius: 8px; padding: 6px 12px; cursor: pointer; text-decoration: none; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
 button:hover, .btn:hover { border-color: var(--accent); }
@@ -75,7 +74,12 @@ details summary { cursor: pointer; color: var(--muted); font-size: 13.5px; }
 #modal .box { background: var(--panel); border-radius: 12px; width: min(1000px, 100%); height: min(720px, 100%); display: flex; flex-direction: column; overflow: hidden; }
 #modal .head { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--line); }
 #modal .head .grow { flex: 1; font-weight: 600; overflow-wrap: anywhere; }
-#view3d { flex: 1; background: var(--viewer); position: relative; min-height: 0; }
+.stage { flex: 1; display: flex; min-height: 0; }
+#view3d { flex: 1; background: var(--viewer); position: relative; min-height: 0; min-width: 0; }
+#ref { width: 34%; max-width: 360px; margin: 0; padding: 12px; border-left: 1px solid var(--line); display: none; flex-direction: column; gap: 8px; background: var(--panel); }
+#ref img { width: 100%; height: auto; max-height: calc(100% - 48px); object-fit: contain; background: #fff; border-radius: 6px; border: 1px solid var(--line); }
+#ref figcaption { color: var(--muted); font-size: 12.5px; }
+@media (max-width: 700px) { .stage { flex-direction: column; } #ref { width: auto; max-width: none; border-left: 0; border-top: 1px solid var(--line); max-height: 40%; } #ref img { max-height: 100%; } }
 #view3d canvas { display: block; }
 #view3d .hint { position: absolute; left: 12px; bottom: 8px; color: var(--muted); font-size: 12.5px; pointer-events: none; }
 #modal img.page { max-width: 100%; max-height: 100%; margin: auto; display: block; background: #fff; }
@@ -91,9 +95,6 @@ details summary { cursor: pointer; color: var(--muted); font-size: 13.5px; }
   <div id="drop">
     <strong>Drop a PDF here or click to choose one</strong>
     <span>The whole file is scanned; pages with a plan view and a lined-up side view are marked usable.</span>
-    <div class="opts" onclick="event.stopPropagation()">Drawing units
-      <select id="units"><option value="inch">inch</option><option value="mm">mm</option></select>
-    </div>
     <input id="file" type="file" accept="application/pdf,.pdf" hidden>
   </div>
 
@@ -114,7 +115,10 @@ details summary { cursor: pointer; color: var(--muted); font-size: 13.5px; }
 <div id="modal">
   <div class="box">
     <div class="head"><span class="grow" id="mtitle"></span><a class="btn" id="mdl" href="#">Download STEP</a><button id="mclose">Close</button></div>
-    <div id="view3d"></div>
+    <div class="stage">
+      <div id="view3d"></div>
+      <figure id="ref"><img alt="3D view from the drawing"><figcaption>As drawn on the sheet - for comparison only, not used to build the model.</figcaption></figure>
+    </div>
   </div>
 </div>
 
@@ -143,7 +147,7 @@ file.onchange = () => file.files[0] && upload(file.files[0]);
 
 async function upload(f) {
   drop.querySelector("strong").textContent = "Uploading " + f.name + " ...";
-  const fd = new FormData(); fd.append("pdf", f); fd.append("units", $("#units").value);
+  const fd = new FormData(); fd.append("pdf", f);
   const r = await fetch("/api/upload", { method: "POST", body: fd });
   const d = await r.json();
   if (!r.ok) { drop.querySelector("strong").textContent = d.error || "Upload failed"; return; }
@@ -259,7 +263,7 @@ function partBox(p, r) {
   if (r.threads && r.threads.length) facts.push("threads " + r.threads.join(", "));
   facts.push("scale 1:" + r.scale);
   return `<div class="part"><div class="row"><b>${esc(r.name)}</b><span>
-      <button class="v3d" data-name="${esc(r.name)}">View 3D</button>
+      <button class="v3d" data-name="${esc(r.name)}" data-ref="${esc(r.ref || "")}">View 3D</button>
       <a class="btn" href="/api/job/${job.id}/file/${p.page}/${encodeURIComponent(r.name)}.step" download title="Download the STEP file" aria-label="Download the STEP file"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 20h14"/></svg></a></span></div>
     <div class="info">${esc(facts.join(" · "))}</div>
     </div>`;
@@ -268,7 +272,7 @@ function partBox(p, r) {
 function wire(c, p) {
   const go = c.querySelector(".go");
   if (go) go.onclick = () => post({ pages: [p.page], scale: c.querySelector(".scale").value || null });
-  c.querySelectorAll(".v3d").forEach((b) => b.onclick = () => show3d(p.page, b.dataset.name));
+  c.querySelectorAll(".v3d").forEach((b) => b.onclick = () => show3d(p.page, b.dataset.name, b.dataset.ref));
 }
 
 // ------------------------------------------------ viewers
@@ -282,6 +286,7 @@ function closeModal() {
   modal.style.display = "none"; cancelAnimationFrame(raf);
   if (renderer) { renderer.dispose(); renderer = null; }
   holder.innerHTML = "";
+  $("#ref").style.display = "none";
 }
 
 function showPage(n) {
@@ -291,10 +296,14 @@ function showPage(n) {
   modal.style.display = "flex";
 }
 
-function show3d(page, name) {
+function show3d(page, name, ref) {
   closeModal();
   $("#mtitle").textContent = name; $("#mdl").style.display = "";
   $("#mdl").href = `/api/job/${job.id}/file/${page}/${encodeURIComponent(name)}.step`;
+  if (ref) {                       // the drawing's own 3D view, beside the model
+    $("#ref img").src = `/api/job/${job.id}/file/${page}/${encodeURIComponent(ref)}`;
+    $("#ref").style.display = "flex";
+  }
   modal.style.display = "flex";
   holder.innerHTML = `<div class="hint">drag to turn · right-drag to move · scroll to zoom</div>`;
   const w = holder.clientWidth, h = holder.clientHeight;
@@ -316,7 +325,8 @@ function show3d(page, name) {
     const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geo, 25), new THREE.LineBasicMaterial({ color: 0x334155 }));
     scene.add(edges);
     const size = box.getSize(new THREE.Vector3()).length();
-    cam.position.set(size * 0.7, -size * 1.0, size * 0.8); cam.near = size / 100; cam.far = size * 20; cam.updateProjectionMatrix();
+    // isometric direction (front-right-top), the way drawings show their 3D views
+    cam.position.set(size * 0.95, -size * 0.95, size * 0.95); cam.near = size / 100; cam.far = size * 20; cam.updateProjectionMatrix();
     controls.target.set(0, 0, 0); controls.update();
   }, undefined, () => { holder.innerHTML = `<div class="err" style="padding:16px">No 3D preview for this part - the STEP file can still be downloaded.</div>`; });
   const loop = () => { raf = requestAnimationFrame(loop); controls.update(); renderer && renderer.render(scene, cam); };

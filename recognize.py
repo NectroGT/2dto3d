@@ -55,6 +55,8 @@ class PartModel:
     raised: list = field(default_factory=list)
     turned: tuple = None           # (axis x in the plan) for a turned (round) part; holes = axial bores
     outline_poly: object = None
+    bosses: list = field(default_factory=list)   # [(x, y, r, z0, z1, [(r, depth)])]: round posts standing in a
+                                                 # pocket, from its floor z0 up to z1, with holes from their top
     rounds: list = field(default_factory=list)   # [(along, u, z, radius)]: round the edges running along
                                                  # "x" or "y" that pass the corner (u = the other plan coordinate, z)
 
@@ -82,6 +84,10 @@ def group_parts(views, pair_tol=0.03):
                     bottom = v
             elif abs(v.y0 - plan.y0) < pair_tol and abs(v.y1 - plan.y1) < pair_tol and v.w < 0.8 * plan.w:
                 side.append(("right" if v.x0 > plan.x1 else "left", v))
+            elif _end_view(v, plan, "x"):
+                side.append(("below" if v.y1 < plan.y0 else "above", v))
+            elif _end_view(v, plan, "y"):
+                side.append(("right" if v.x0 > plan.x1 else "left", v))
         if not side:
             continue
         used.add(id(plan)); used.update(id(v) for _, v in side)
@@ -89,6 +95,23 @@ def group_parts(views, pair_tol=0.03):
             used.add(id(bottom))
         parts.append((plan, side, bottom))
     return parts
+
+
+def _end_view(v, plan, along, tol=0.03):
+    """the end view of a stepped round part (shaft): a round view, smaller than the plan's widest step,
+    centred on the plan's centre line and beside it along that line (end views of a shaft are only as
+    big as the step facing them, so their edges do not line up with the plan's)."""
+    arcs = [p for p in v.prims if p.kind in ("circle", "arc")]
+    if not arcs:
+        return False
+    big = max(arcs, key=lambda p: p.r)
+    if abs(2 * big.r - max(v.w, v.h)) > tol:
+        return False
+    if along == "y":     # beside it (left / right): centres level, end view not taller than the plan
+        return (v.x0 > plan.x1 or v.x1 < plan.x0) and abs(big.cy - (plan.y0 + plan.y1) / 2) < tol \
+            and 2 * big.r < plan.h + tol and v.w < 0.8 * plan.w
+    return (v.y0 > plan.y1 or v.y1 < plan.y0) and abs(big.cx - (plan.x0 + plan.x1) / 2) < tol \
+        and 2 * big.r < plan.w + tol and v.h < 0.8 * plan.h
 
 
 # ---------------------------------------------------------------- geometry helpers
@@ -244,7 +267,7 @@ class SideReader:
             top_at_high = where == "left"
         self.top_at_high = top_at_high
         self.T = (self.t1 - self.t0) * scale
-        self.lines, self.flats, self.vflats = [], [], []
+        self.lines, self.flats, self.vflats, self.hflats = [], [], [], []
         for p in view.prims + view.thin:
             if p.kind != "line":
                 continue
@@ -257,10 +280,14 @@ class SideReader:
                 self.flats.append((y0, min(x0, x1), max(x0, x1)))
                 if p.cls == "visible":
                     self.vflats.append((y0, min(x0, x1), max(x0, x1)))
+                else:
+                    self.hflats.append((y0, min(x0, x1), max(x0, x1)))
             if not self.horizontal and abs(x1 - x0) < 1e-3:
                 self.flats.append((x0, min(y0, y1), max(y0, y1)))
                 if p.cls == "visible":
                     self.vflats.append((x0, min(y0, y1), max(y0, y1)))
+                else:
+                    self.hflats.append((x0, min(y0, y1), max(y0, y1)))
         self.lines = self._merge(self.lines)
 
     @staticmethod
@@ -275,10 +302,10 @@ class SideReader:
                 out.append((u, a, b))
         return out
 
-    def floor(self, u1, u2, tol=0.004):
+    def floor(self, u1, u2, tol=0.004, hidden=False):
         """model z of a flat (pocket floor) spanning u1..u2, strictly between the faces"""
         best = None
-        flats = self._merge([(t, a, b) for t, a, b in self.flats])
+        flats = self._merge([(t, a, b) for t, a, b in (self.hflats if hidden else self.flats)])
         for t, a, b in flats:
             ov = min(b, u2) - max(a, u1)
             if ov < 0.6 * (u2 - u1) or a < u1 - 0.1 * (u2 - u1) - tol or b > u2 + 0.1 * (u2 - u1) + tol:
@@ -334,8 +361,88 @@ def _material_face(fs):
     return body
 
 
+def _open_pocket(fs, body, readers):
+    """_material_face skips a second outline just inside the first as an edge-break chamfer. When the side
+    view shows a hidden floor across it, it is a pocket instead (a box / enclosure with thin walls):
+    returns the outer face, whose big inner ring is then cut as a pocket. None otherwise."""
+    outer = max(fs, key=lambda f: Polygon(f.exterior).area)
+    if body is outer:
+        return None
+    big = [r for r in outer.interiors if Polygon(r).area > 0.8 * Polygon(outer.exterior).area]
+    if not big:
+        return None
+    x0, y0, x1, y1 = Polygon(big[0]).bounds
+    for rdr in readers:
+        u1, u2 = (x0, x1) if rdr.horizontal else (y0, y1)
+        z = rdr.floor(u1, u2, hidden=True)
+        if z is not None and z < 0.9 * rdr.T:
+            return outer
+    return None
+
+
+def _bosses(plan, pocket, readers, cuts, scale, M):
+    """round posts standing on a pocket floor: circles inside the pocket whose edges run, in the side
+    view, from the floor up to a top below the open face; smaller circles on the same centre are holes
+    drilled from the post's top, as deep as their hidden lines go."""
+    ring = Polygon(max(pocket.interiors, key=lambda r: Polygon(r).area))
+    T = readers[0].T
+    floor = min((c.depth for c in cuts if c.side == "top"), default=None)
+    if floor is None:
+        return []
+    z_floor = T - floor
+    groups = []
+    for p in plan.prims:
+        if p.kind == "circle" and ring.contains(Point(p.cx, p.cy)):
+            g = next((g for g in groups if math.dist(g[0], (p.cx, p.cy)) < 0.003), None)
+            if g is None:
+                groups.append(((p.cx, p.cy), [p.r]))
+            else:
+                g[1].append(p.r)
+    out = []
+    for (cx, cy), rs in groups:
+        rs = sorted(set(round(r, 4) for r in rs))
+        R = rs[-1]
+        top = None
+        for rdr in readers:
+            u = cx if rdr.horizontal else cy
+            a, b = rdr.z_range(u - R), rdr.z_range(u + R)
+            if a and b and abs(min(a[0], b[0]) - z_floor) < 0.02 and max(a[1], b[1]) < T - 0.01:
+                top = max(a[1], b[1]); break
+        if top is None:
+            continue
+        holes = []
+        for r in rs[:-1]:
+            for rdr in readers:
+                u = cx if rdr.horizontal else cy
+                a, b = rdr.z_range(u - r), rdr.z_range(u + r)
+                if a and b:
+                    holes.append((r * scale, top - min(a[0], b[0]))); break
+        x, y = M((cx, cy))
+        out.append((x, y, R * scale, z_floor, top, holes))
+    return out
+
+
 # ---------------------------------------------------------------- recognition
+def _round_end_view(plan, side):
+    """a plan view that is nothing but concentric circles is the end view of a round part (bushing,
+    washer, flange): the profile to spin is the side view as wide as its biggest circle. Returns
+    (profile view, its side views) or None."""
+    if not plan.prims or any(p.kind != "circle" for p in plan.prims):
+        return None
+    big = max(plan.prims, key=lambda p: p.r)
+    if not all(math.dist((p.cx, p.cy), (big.cx, big.cy)) < 0.003 for p in plan.prims):
+        return None
+    flip = dict(above="below", below="above", left="right", right="left")
+    for w, v in side:
+        across = v.w if w in ("above", "below") else v.h
+        if abs(across - 2 * big.r) < 0.01:
+            return v, [(flip[w], plan)] + [(w2, v2) for w2, v2 in side if v2 is not v]
+    return None
+
+
 def recognize(plan, side, bottom, scale, snap=0.0005):
+    if bottom is None and (rv := _round_end_view(plan, side)):
+        return recognize(rv[0], rv[1], None, scale, snap)
     notes = []
     readers = [SideReader(w, v, plan, scale) for w, v in side]
     rd = min(readers, key=lambda r: -len(r.lines))
@@ -351,6 +458,9 @@ def recognize(plan, side, bottom, scale, snap=0.0005):
     if outer.geom_type == "MultiPolygon":
         outer = max(outer.geoms, key=lambda g: g.area)
     body = _material_face(fs)
+    pocket = _open_pocket(fs, body, readers)
+    if pocket is not None:
+        body = pocket
     circles = [(p.cx, p.cy, p.r) for p in plan.prims if p.kind in ("circle", "arc")]
     ctol = 0.002
     outline = [(k, *[M(q) for q in pts]) for k, *pts in to_segments(list(outer.exterior.coords), circles, ctol)]
@@ -500,29 +610,35 @@ def recognize(plan, side, bottom, scale, snap=0.0005):
                 side_, d = _cut_depth(readers, lambda r: (by0, by1) if not r.horizontal else (bx0, bx1), "bottom", T)
                 cuts.append(Cut(segs, side_, d))
     pm = PartModel(outline, T, holes, cuts, notes)
+    if pocket is not None:
+        pm.bosses = _bosses(plan, pocket, readers, cuts, scale, M)
+        notes.append(f"pocket open at the top" + (f", {len(pm.bosses)} boss(es) in it" if pm.bosses else ""))
     pm.outline_poly = outer
     # a turned part: its end view is a set of concentric circles as wide as the plan view
     for rdr in readers:
-        circ = [p for p in rdr.v.prims if p.kind == "circle"]
-        if circ and abs(rdr.v.w - rdr.v.h) < 0.01:
+        circ = [p for p in rdr.v.prims if p.kind in ("circle", "arc")]
+        if circ:
             big = max(circ, key=lambda p: p.r)
-            if abs(2 * big.r - rdr.v.w) > 0.01:
+            if abs(2 * big.r - max(rdr.v.w, rdr.v.h)) > 0.01:
                 continue
+            c0 = (big.cx if rdr.horizontal else big.cy)
+            # radii of the outline's steps (silhouette edges seen end-on are circles too, not bores)
+            steps_r = set()
+            for q in plan.prims:
+                if q.kind == "line":
+                    for xx, yy in q.pts:
+                        steps_r.add(round(abs((xx if rdr.horizontal else yy) - c0), 3))
             width = (plan.x1 - plan.x0) if rdr.horizontal else (plan.y1 - plan.y0)
-            if abs(2 * big.r - width) < 0.01 and all(math.dist((p.cx, p.cy), (big.cx, big.cy)) < 0.003 for p in circ):
-                u = big.cx if rdr.horizontal else big.cy
+            lo, hi = (plan.x0, plan.x1) if rdr.horizontal else (plan.y0, plan.y1)
+            # as wide as the plan, or (a stepped shaft) as wide as one of its steps, on the plan's centre line
+            fits = abs(2 * big.r - width) < 0.01 or (
+                abs(c0 - (lo + hi) / 2) < 0.01 and any(abs(big.r - r) < 0.003 for r in steps_r))
+            if fits and all(math.dist((p.cx, p.cy), (big.cx, big.cy)) < 0.003 for p in circ):
+                u = c0
                 axis = (u - (plan.x0 if rdr.horizontal else plan.y0)) * scale
                 bores = []
-                # radii of the outline's steps (silhouette edges seen end-on are circles too, not bores)
-                c0 = (big.cx if rdr.horizontal else big.cy)
-                steps_r = set()
-                for q in plan.prims:
-                    if q.kind == "line":
-                        for xx, yy in q.pts:
-                            steps_r.add(round(abs((xx if rdr.horizontal else yy) - c0), 3))
                 for p in circ:
-                    if p.r < big.r - 0.01 and round(p.r, 3) not in steps_r and round(p.r, 3) + 0.001 not in steps_r \
-                            and round(p.r, 3) - 0.001 not in steps_r:
+                    if p.r < big.r - 0.01 and not any(abs(p.r - r) < max(0.0015, 0.0025 * p.r) for r in steps_r):
                         # depth: plan lines at axis +/- r running in from the end facing this view
                         depth = None
                         for q in plan.thin + plan.prims:
@@ -532,12 +648,17 @@ def recognize(plan, side, bottom, scale, snap=0.0005):
                             if rdr.horizontal and abs(ax - bx) < 1e-3 and min(abs(ax - (u - p.r)), abs(ax - (u + p.r))) < 0.003:
                                 end = plan.y1 if rdr.where == "above" else plan.y0
                                 near, far = sorted((abs(ay - end), abs(by - end)))
-                                if near < 0.03:
+                                if near < 0.1:          # a chamfer at the mouth leaves a small gap
                                     depth = max(depth or 0, far)
-                        bores.append((p.r * scale, (depth or p.r * 4) * scale, rdr.where))
+                        bores.append((p.r * scale, (depth or p.r * 4) * scale, rdr.where, depth is not None))
+                # a circle just outside a bore with no hidden lines of its own is the bore's chamfer edge
+                bores = [b[:3] for b in bores
+                         if b[3] or not any(o[3] and 0 < b[0] - o[0] < 0.1 * scale for o in bores)]
                 pm.turned = (axis, "x" if rdr.horizontal else "y", bores)
-                pm.holes, pm.side_holes, pm.cuts = [], [], []
-                notes.append(f"turned part (round) - {len(bores)} axial bore(s)")
+                keys = _keyways(pm, plan, rdr, big, scale)
+                pm.holes, pm.side_holes, pm.cuts = [], [], keys
+                notes.append(f"turned part (round) - {len(bores)} axial bore(s)"
+                             + (f", {len(keys)} keyway(s)" if keys else ""))
                 return pm
     _steps(pm, plan, readers, fs, body, outer, scale, M, circles, ctol)
     _grooves(pm, plan, readers, fs, body, outer, scale, M, circles, ctol)
@@ -545,6 +666,37 @@ def recognize(plan, side, bottom, scale, snap=0.0005):
     _side_holes(pm, plan, readers, outer, scale, M)
     _hidden_edge_holes(pm, plan, outer, scale, M)
     return pm
+
+
+def _keyways(pm, plan, rdr, big, scale):
+    """slots seen face-on in the plan of a round part (keyways): their depth is the flat floor in the end
+    view, a straight line inside the circle across the slot's width. Returns Cuts whose depth is the
+    floor's height above the axis (model units); the side says which way the slot faces."""
+    out = []
+    lines = [p for p in rdr.v.prims if p.kind == "line"]
+    for c in pm.cuts:
+        xs = [q[0] for s in c.ring for q in s[1:]]
+        ys = [q[1] for s in c.ring for q in s[1:]]
+        a, b = (min(xs), max(xs)) if rdr.horizontal else (min(ys), max(ys))
+        a0 = a / scale + (plan.x0 if rdr.horizontal else plan.y0)     # slot edges on the sheet
+        b0 = b / scale + (plan.x0 if rdr.horizontal else plan.y0)
+        floor = None
+        for p in lines:
+            (px, py), (qx, qy) = p.pts[0], p.pts[-1]
+            if rdr.horizontal:      # end view above / below: the floor is a horizontal line from a0 to b0
+                if abs(py - qy) < 1e-3 and abs(min(px, qx) - a0) < 0.01 and abs(max(px, qx) - b0) < 0.01:
+                    floor = py - big.cy
+            else:                   # end view beside: a vertical line from a0 to b0
+                if abs(px - qx) < 1e-3 and abs(min(py, qy) - a0) < 0.01 and abs(max(py, qy) - b0) < 0.01:
+                    floor = px - big.cx
+        if floor is None:
+            continue
+        # third angle: in a view on the right (or above) the side towards the viewer of the plan is its
+        # left (or bottom); in a view on the left (or below) it is the right (or top)
+        toward = floor < 0 if rdr.where in ("right", "above") else floor > 0
+        h = abs(floor) * scale
+        out.append(Cut(c.ring, "top" if toward else "bottom", h))
+    return out
 
 
 def _hidden_edge_holes(pm, plan, outer, scale, M):

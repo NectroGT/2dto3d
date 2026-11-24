@@ -23,7 +23,8 @@ a network you trust; Windows may ask to allow Python through the firewall the fi
 Upload a PDF and every page is scanned for parts that can be built (a plan view with a lined-up side view).
 Pages that cannot be used say why (assembly drawing, scanned image, only 3D views, no side view lined up), and
 usable pages that look like an assembly are flagged for a check. Convert one page or all usable pages, turn each
-part around in a 3D preview, and download the STEP files one by one or as a zip. Pages are scanned and converted
+part around in a 3D preview (beside it, the 3D view drawn on the sheet, if there is one, to compare by eye -
+it is only shown, never used to build the model), and download the STEP files one by one or as a zip. Pages are scanned and converted
 side by side in up to 4 worker processes; the text read by the scan is kept, so converting does not run OCR again.
 Uploads and results are kept in `web_jobs/`.
 
@@ -61,7 +62,10 @@ python scan.py drawing.pdf --no-text    # geometry only (faster, no assembly che
    around the centre of the plan's arcs when the empty area sits at their radii (ring seats, lips, grooves round a
    bore), otherwise cut straight across, as wide as the nearest pair of plan lines either side of the cut.
 7. **Turned (round) parts**: an end view of concentric circles as wide as the plan makes the outline spin into a
-   round part; inner circles that are not outline steps are axial bores. A part with its own "SCALE: 1 / 1" label
+   round part; inner circles that are not outline steps are axial bores. On a stepped shaft the end view (or a
+   section through it) is only as wide as the step it faces; it is paired by its centre line. A slot seen in the
+   plan is a keyway, cut down to the flat drawn across it in the end view. When the plan view is nothing but
+   concentric circles (bushing, washer, flange), it is the end view and the side view beside it is the profile spun. A part with its own "SCALE: 1 / 1" label
    uses that scale.
 8. **Builds** the solid with CadQuery and exports STEP.
 
