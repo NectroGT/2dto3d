@@ -214,6 +214,11 @@ def all_zip(job_id):
 
 
 if __name__ == "__main__":
+    import socket
+    with socket.socket() as s:                 # Windows lets a second server share the port: refuse instead
+        if s.connect_ex(("127.0.0.1", 5000)) == 0:
+            sys.exit("Something is already running on http://127.0.0.1:5000 (an older copy of this app?). "
+                     "Close it first, then start this one again.")
     import scan
     print(f"pdf2step web: open http://127.0.0.1:5000   ({scan.workers()} worker processes)")
     app.run(host="127.0.0.1", port=5000, debug=False, threaded=True)

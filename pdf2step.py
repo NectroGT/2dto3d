@@ -122,6 +122,8 @@ def run(pdf, page, scale, out, units="inch", words=None):
             if secs and not turned:
                 from sections import apply_sections
                 body = apply_sections(body, pm, plan, pscale, prims, secs)
+            from build import apply_rounds
+            body = apply_rounds(body, pm)
             s = export(body, os.path.join(out, name + ".step"), to_mm=units == "inch")
             bb = s.BoundingBox()
             if abs(turned) > 0:

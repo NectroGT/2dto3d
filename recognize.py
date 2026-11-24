@@ -55,6 +55,8 @@ class PartModel:
     raised: list = field(default_factory=list)
     turned: tuple = None           # (axis x in the plan) for a turned (round) part; holes = axial bores
     outline_poly: object = None
+    rounds: list = field(default_factory=list)   # [(along, u, z, radius)]: round the edges running along
+                                                 # "x" or "y" that pass the corner (u = the other plan coordinate, z)
 
 
 # ---------------------------------------------------------------- views -> part groups
@@ -539,6 +541,7 @@ def recognize(plan, side, bottom, scale, snap=0.0005):
                 return pm
     _steps(pm, plan, readers, fs, body, outer, scale, M, circles, ctol)
     _grooves(pm, plan, readers, fs, body, outer, scale, M, circles, ctol)
+    _rounds(pm, plan, readers, scale, M)
     _side_holes(pm, plan, readers, outer, scale, M)
     _hidden_edge_holes(pm, plan, outer, scale, M)
     return pm
@@ -858,6 +861,88 @@ def _grooves(pm, plan, readers, fs, body, outer, scale, M, circles, ctol):
         found.append(m["depth"])
     if found:
         pm.notes.append(f"{len(found)} groove(s) across the part, {', '.join(f'{d:.4f}' for d in sorted(set(found)))} deep")
+
+
+def _view_arcs(view, short=0.012, turn=25.0):
+    """quarter-round arcs in a view: real arcs, or runs of tiny straight pieces (how many CAD exports draw
+    them). A thick stroke is drawn as its outline, so each round shows up twice (inner and outer edge),
+    joined by short square ends: a run stops where the direction turns sharply. [(cx, cy, r, mid_angle)]"""
+    out = []
+    def close(run):
+        if len(run) < 4:
+            return
+        pts = [run[0].pts[0]] + [p.pts[-1] for p in run]
+        cx, cy, r, rms = fit_circle(pts)
+        if not (0.002 < r < 0.08) or rms > 0.05 * r:
+            return
+        a = [math.atan2(q[1] - cy, q[0] - cx) for q in pts]
+        sweep = sum(((a[k + 1] - a[k]) + math.pi) % (2 * math.pi) - math.pi for k in range(len(a) - 1))
+        if 70 <= abs(math.degrees(sweep)) <= 110:
+            out.append((cx, cy, r, a[0] + sweep / 2))
+    run = []
+    for p in view.prims:
+        if p.kind == "arc":
+            sw = ((p.a1 - p.a0) + 360) % 360
+            if 70 <= sw <= 110 and p.r < 0.08:
+                out.append((p.cx, p.cy, p.r, math.radians(p.a0 + sw / 2)))
+            close(run); run = []
+            continue
+        L = math.dist(p.pts[0], p.pts[-1]) if p.kind == "line" else 0
+        if p.kind != "line" or not 1e-5 < L < short:
+            close(run); run = []
+            continue
+        if run and run[-1].path == p.path and math.dist(run[-1].pts[-1], p.pts[0]) < 2e-4:
+            (ax, ay), (bx, by) = run[-1].pts[0], run[-1].pts[-1]
+            (cx_, cy_), (dx, dy) = p.pts[0], p.pts[-1]
+            d1 = math.atan2(by - ay, bx - ax); d2 = math.atan2(dy - cy_, dx - cx_)
+            if abs(math.degrees((d2 - d1 + math.pi) % (2 * math.pi) - math.pi)) < turn:
+                run.append(p); continue
+        close(run); run = [p]
+    close(run)
+    return out
+
+
+def _rounds(pm, plan, readers, scale, M):
+    """rounded edges seen end-on in a side view (the leg-end and groove rounds of Detail N): each quarter
+    arc gives a radius and the corner it replaces; the build rounds the solid's edges along that corner.
+    The stroke's two arcs are concentric: the true edge is the one on the empty side (the larger arc for a
+    convex corner, the smaller for an inside corner)."""
+    if pm.turned or pm.thickness <= 0:
+        return
+    seen = []
+    for rdr in readers:
+        arcs = _view_arcs(rdr.v)
+        if not arcs:
+            continue
+        prof = unary_union(faces(rdr.v.prims))
+        groups = []
+        for a in arcs:
+            g = next((g for g in groups if math.dist(g[0][:2], a[:2]) < 0.004), None)
+            (g.append(a) if g is not None else groups.append([a]))
+        for g in groups:
+            cx, cy = sum(a[0] for a in g) / len(g), sum(a[1] for a in g) / len(g)
+            mid = g[0][3]
+            convex = prof.contains(Point(cx, cy))
+            r = max(a[2] for a in g) if convex else min(a[2] for a in g)
+            R = round(r * scale / 0.0005) * 0.0005
+            if R < 0.004 or R > 0.3 * pm.thickness:
+                continue
+            k = r * math.sqrt(2)                       # the sharp corner the round replaces
+            px, py = cx + k * math.cos(mid), cy + k * math.sin(mid)
+            if rdr.horizontal:                         # view below/above: u = x, t = y; edges run along y
+                t, along, u = py, "y", M((px, plan.y0))[0]
+            else:                                      # view left/right: u = y, t = x; edges run along x
+                t, along, u = px, "x", M((plan.x0, py))[1]
+            z = _zmodel(rdr, t)
+            z = min(max(z, 0.0), pm.thickness)
+            if z < 0.03:                               # (thick strokes: a face line sits a little inside)
+                z = 0.0
+            elif z > pm.thickness - 0.03:
+                z = pm.thickness
+            key = (along, round(u, 3), round(z, 3), R)
+            if key not in seen:
+                seen.append(key)
+                pm.rounds.append((along, u, z, R))
 
 
 def _side_holes(pm, plan, readers, outer, scale, M):

@@ -135,3 +135,85 @@ def _turned(pm):
         prof = [(x, max(r, 0.0)) for x, r in prof]
         body = cq.Workplane("XY").polyline(prof).close().revolve(360, (0, 0, 0), (1, 0, 0))
     return body
+
+
+def _round_edges(solid, along, u, z, tol_z=0.008, tol_u=0.012):
+    """edges at height z that run along x (or y) and pass u in the other plan coordinate"""
+    out = []
+    for e in solid.Edges():
+        p = [e.positionAt(k / 10) for k in range(11)]
+        if any(abs(q.z - z) > tol_z for q in p):
+            continue
+        xs = [q.x for q in p]; ys = [q.y for q in p]
+        a, b = (xs, ys) if along == "x" else (ys, xs)
+        if max(a) - min(a) < 0.02 or max(a) - min(a) < 2 * (max(b) - min(b)):
+            continue
+        if min(b) - tol_u <= u <= max(b) + tol_u:
+            out.append(e)
+    # a corner edge is often several pieces (straight + arc + straight); rounding only some of them fails,
+    # so carry on along the chain: connected edges at the same height that continue smoothly (< 35 deg turn)
+    def flat(e):
+        return all(abs(e.positionAt(k / 4).z - z) <= tol_z for k in range(5))
+    chain = list(out)
+    grew = True
+    while grew:
+        grew = False
+        for e in solid.Edges():
+            if any(e.isSame(c) for c in chain) or not flat(e):
+                continue
+            for c in list(chain):
+                for pe, te in ((e.startPoint(), e.tangentAt(0)), (e.endPoint(), e.tangentAt(1))):
+                    for pc, tc in ((c.startPoint(), c.tangentAt(0)), (c.endPoint(), c.tangentAt(1))):
+                        if pe.sub(pc).Length < 1e-5 and abs(te.normalized().dot(tc.normalized())) > 0.82:
+                            chain.append(e); grew = True
+                            break
+                    if grew and chain[-1] is e:
+                        break
+                if grew and chain[-1] is e:
+                    break
+    return chain
+
+
+def _fillet_all(solid, picks):
+    """one fillet operation with a radius per edge (rounds meeting at a corner must be made together)"""
+    from OCP.BRepFilletAPI import BRepFilletAPI_MakeFillet
+    mk = BRepFilletAPI_MakeFillet(solid.wrapped)
+    for e, R in picks:
+        mk.Add(R, e.wrapped)
+    mk.Build()
+    if not mk.IsDone():
+        raise ValueError("fillet failed")
+    out = cq.Shape.cast(mk.Shape())
+    if not out.isValid():
+        raise ValueError("fillet gave an invalid solid")
+    return out
+
+
+def apply_rounds(body, pm):
+    """round the edges found in the side views (pm.rounds). Rounds meeting at a corner must be made in one
+    operation, so every round is added to one growing fillet, biggest first; a round that makes it fail is
+    left out (sharp) and noted, and the rest still go in."""
+    if not getattr(pm, "rounds", None):
+        return body
+    solid = body.val()
+    taken, groups = [], []                       # each round's own edges (an edge goes to the first round taking it)
+    for along, u, z, R in sorted(pm.rounds, key=lambda r: -r[3]):
+        g = [(e, R) for e in _round_edges(solid, along, u, z) if not any(e.isSame(t) for t in taken)]
+        if g:
+            taken += [e for e, _ in g]
+            groups.append((R, g))
+    keep, best, skipped = [], None, []
+    for R, g in groups:
+        try:
+            best = _fillet_all(solid, keep + g)
+            keep += g
+        except Exception:
+            skipped.append((R, len(g)))
+    if keep:
+        made = len(groups) - len(skipped)
+        rs = sorted({R for _, R in keep})
+        pm.notes.append(f"{made} rounded edge(s) from the side views made (R {', '.join(f'{r:g}' for r in rs)})")
+    if skipped:
+        pm.notes.append(f"{len(skipped)} rounded edge(s) (R {', '.join(sorted({f'{r:g}' for r, _ in skipped}))}) "
+                        "could not be made - left sharp")
+    return cq.Workplane("XY").add(best) if best is not None else body
