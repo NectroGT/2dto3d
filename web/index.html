@@ -36,6 +36,8 @@ button, .btn { font: inherit; border: 1px solid var(--line); background: var(--p
 button:hover, .btn:hover { border-color: var(--accent); }
 button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
 button:disabled { opacity: .5; cursor: default; }
+.btn.off { opacity: .5; cursor: default; }
+.btn.off:hover { border-color: var(--line); }
 select, input[type=number] { font: inherit; background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; }
 input[type=number] { width: 64px; }
 
@@ -101,7 +103,7 @@ details summary { cursor: pointer; color: var(--muted); font-size: 13.5px; }
     <span class="grow"></span>
     <label class="chk"><input type="checkbox" id="onlyUsable"> usable pages only</label>
     <button class="primary" id="convertAll" disabled>Convert all usable pages</button>
-    <a class="btn" id="zip" href="#">Download all STEP</a>
+    <a class="btn off" id="zip" href="#" aria-disabled="true">Download all STEP</a>
     <button id="newFile">New file</button>
     <div id="progress"><div></div></div>
   </div>
@@ -158,6 +160,7 @@ function start(id) {
 $("#newFile").onclick = () => { clearTimeout(timer); job = null; history.replaceState(null, "", "#"); location.reload(); };
 $("#onlyUsable").onchange = () => job && render(job);
 $("#convertAll").onclick = () => post({ pages: "usable" });
+$("#zip").onclick = (e) => { if ($("#zip").classList.contains("off")) e.preventDefault(); };
 
 async function post(body) {
   await fetch(`/api/job/${job.id}/convert`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
@@ -189,6 +192,13 @@ function render(j) {
   const prog = scanned + j.pages.filter((p) => ["done", "failed"].includes(p.convert)).length;
   $("#progress div").style.width = (100 * prog / Math.max(total, 1)) + "%";
   $("#convertAll").disabled = !usable || j.pages.every((p) => p.scan !== "usable" || p.convert);
+  // all STEP files only once every usable page has been converted
+  const allDone = j.scanned && usable > 0 && converting === 0 &&
+                  j.pages.every((p) => p.scan !== "usable" || ["done", "failed"].includes(p.convert));
+  const zip = $("#zip");
+  zip.classList.toggle("off", !allDone);
+  zip.setAttribute("aria-disabled", String(!allDone));
+  zip.title = allDone ? "" : "Convert all usable pages first";
   const only = $("#onlyUsable").checked;
   for (const p of j.pages) {
     let c = cards[p.page];

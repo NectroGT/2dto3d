@@ -214,11 +214,25 @@ def all_zip(job_id):
 
 
 if __name__ == "__main__":
-    import socket
+    import argparse, socket
+    ap = argparse.ArgumentParser(description="pdf2step web app")
+    ap.add_argument("--host", default="127.0.0.1",
+                    help="address to listen on; 0.0.0.0 opens it to other computers on the network (default: this PC only)")
+    ap.add_argument("--port", type=int, default=5000)
+    a = ap.parse_args()
     with socket.socket() as s:                 # Windows lets a second server share the port: refuse instead
-        if s.connect_ex(("127.0.0.1", 5000)) == 0:
-            sys.exit("Something is already running on http://127.0.0.1:5000 (an older copy of this app?). "
-                     "Close it first, then start this one again.")
+        if s.connect_ex(("127.0.0.1", a.port)) == 0:
+            sys.exit(f"Something is already running on port {a.port} (an older copy of this app?). "
+                     "Close it first, or pick another --port.")
     import scan
-    print(f"pdf2step web: open http://127.0.0.1:5000   ({scan.workers()} worker processes)")
-    app.run(host="127.0.0.1", port=5000, debug=False, threaded=True)
+    print(f"pdf2step web: open http://127.0.0.1:{a.port}   ({scan.workers()} worker processes)")
+    if a.host not in ("127.0.0.1", "localhost"):
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.connect(("10.255.255.255", 1))   # no packet is sent; just picks the LAN address
+                lan = s.getsockname()[0]
+        except OSError:
+            lan = socket.gethostbyname(socket.gethostname())
+        print(f"  from other computers: http://{lan}:{a.port}")
+        print("  note: there is no login - anyone who can reach this address can upload and download drawings")
+    app.run(host=a.host, port=a.port, debug=False, threaded=True)

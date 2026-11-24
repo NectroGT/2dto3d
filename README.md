@@ -14,8 +14,12 @@ the tool works from the geometry only and `--scale` is required.
 
 ## Web app
 ```
-python app.py          # then open http://127.0.0.1:5000
+python app.py                          # then open http://127.0.0.1:5000
+python app.py --host 0.0.0.0           # also reachable from other computers on the network
+python app.py --host 0.0.0.0 --port 8080
 ```
+With `--host 0.0.0.0` the app prints the address to use from other computers. There is no login, so only open it on
+a network you trust; Windows may ask to allow Python through the firewall the first time.
 Upload a PDF and every page is scanned for parts that can be built (a plan view with a lined-up side view).
 Pages that cannot be used say why (assembly drawing, scanned image, only 3D views, no side view lined up), and
 usable pages that look like an assembly are flagged for a check. Convert one page or all usable pages, turn each
